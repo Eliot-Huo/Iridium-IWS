@@ -1,11 +1,13 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.7 Final
-完全符合 WSDL Schema 定義與 SITEST 環境要求
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.8 Final
+完全符合官方 WSDL Schema (v25.1.0.1)
 
-v6.7 Final 修正：
-- 修正 updateSubscriberSbdPlan 的 plan 標籤順序（Schema 對齊）
-- 修正 getSBDBundles 加入 serviceType（解決 "No plan provided"）
-- 維持 v6.6 的統一認證結構（無 caller 標籤）
+v6.8 Final 修正（根據官方文件）：
+- getSBDBundles: 使用 Plan 對象（fromBundleId, forActivate）
+- 刪除 updateSubscriberSbdPlan → 改用 accountUpdate
+- 刪除 deactivateSubscriber → 改用 setSubscriberAccountStatus
+- SBD Plan: 移除不存在的 demoAndTrial 欄位
+- Boolean: 使用 "true"/"false" 字串（非 0/1）
 - HMAC-SHA1 + Base64 簽章（已驗證成功）
 """
 from __future__ import annotations
@@ -40,19 +42,19 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.7 Final
-    SITEST Environment Optimized - WSDL Schema Compliant
+    IWS SOAP 1.2 API Gateway v6.8 Final
+    WSDL Compliant Edition - 完全符合官方 WSDL (v25.1.0.1)
     
     核心管理功能：
     - 連線測試（getSystemStatus）
     - 查詢方案（getSBDBundles）
-    - 變更費率（updateSubscriberSbdPlan）
-    - 註銷設備（deactivateSubscriber）
+    - 變更設備（accountUpdate）
     - 暫停設備（setSubscriberAccountStatus - SUSPENDED）
     - 恢復設備（setSubscriberAccountStatus - ACTIVE）
+    - 註銷設備（setSubscriberAccountStatus - DEACTIVATED）
     
-    認證方式（v6.6/v6.7 統一）：
-    - 所有請求統一使用：iwsUsername + signature + timestamp
+    認證方式：
+    - 統一使用：iwsUsername + signature + timestamp
     - 不使用 caller 和 callerPassword（SITEST 不支援）
     
     簽章算法（已驗證成功）：
@@ -63,7 +65,7 @@ class IWSGateway:
     
     安全性：
     - 所有憑證從 config.settings 匯入
-    - 不含任何 hardcoded 帳密資訊
+    - 零 hardcoded 帳密資訊
     """
     
     # SOAP 1.2 Namespaces
@@ -84,6 +86,7 @@ class IWSGateway:
     # Account Status
     ACCOUNT_STATUS_ACTIVE = 'ACTIVE'
     ACCOUNT_STATUS_SUSPENDED = 'SUSPENDED'
+    ACCOUNT_STATUS_DEACTIVATED = 'DEACTIVATED'
     
     def __init__(self, 
                  username: Optional[str] = None,
@@ -113,10 +116,10 @@ class IWSGateway:
                 "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
         
-        print(f"\n[IWS] Gateway initialized (v6.7 Final)")
+        print(f"\n[IWS] Gateway initialized (v6.8 Final - WSDL Compliant)")
         print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64 (Verified ✓)")
+        print(f"[IWS] WSDL Version: v25.1.0.1")
         print(f"[IWS] Authentication: Unified (No caller tags)")
-        print(f"[IWS] Schema: WSDL Compliant ✓")
         print(f"[IWS] Username: {self.username}")
         print(f"[IWS] SP Account: {self.sp_account}")
     
@@ -203,25 +206,22 @@ class IWSGateway:
         
         return digits
     
-    def _bool_to_int(self, value: bool) -> str:
+    def _bool_to_string(self, value: bool) -> str:
         """
-        將布林值轉換為數字字串
+        將布林值轉換為字串
         
-        IWS API 要求布林值以數字形式發送
+        IWS API 要求布林值以 "true"/"false" 字串發送
         
         Args:
             value: 布林值
             
         Returns:
-            str: "1" (True) 或 "0" (False)
+            str: "true" (True) 或 "false" (False)
         """
-        return "1" if value else "0"
+        return "true" if value else "false"
     
     def _safe_xml_value(self, value: Optional[str]) -> str:
-        """
-        安全的 XML 值處理
-        強制完整標籤閉合：<tag></tag>
-        """
+        """安全的 XML 值處理"""
         if value is None or value == '':
             return ''
         return str(value)
@@ -259,8 +259,6 @@ class IWSGateway:
         """
         構建 getSystemStatus 的 SOAP Body
         
-        統一認證結構（v6.6/v6.7）
-        
         Returns:
             tuple: (action_name, soap_body)
         """
@@ -280,13 +278,18 @@ class IWSGateway:
         
         return action_name, body
     
-    def _build_get_sbd_bundles_body(self, model_id: Optional[str] = None) -> tuple[str, str]:
+    def _build_get_sbd_bundles_body(self, 
+                                    from_bundle_id: str = "0",
+                                    for_activate: bool = True,
+                                    model_id: Optional[str] = None) -> tuple[str, str]:
         """
         構建 getSBDBundles 的 SOAP Body
         
-        v6.7: 加入 serviceType（解決 "No plan provided" 錯誤）
+        根據 WSDL p.161-162
         
         Args:
+            from_bundle_id: 現有 bundle ID（新啟用用 "0"）
+            for_activate: 是否為新啟用（true=新啟用, false=更新現有）
             model_id: 可選的設備型號 ID
             
         Returns:
@@ -297,10 +300,13 @@ class IWSGateway:
         signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
         
+        # Boolean 轉字串
+        for_activate_str = self._bool_to_string(for_activate)
+        
         # modelId 是可選的
         model_id_tag = ''
         if model_id:
-            model_id_tag = f'<modelId>{model_id}</modelId>'
+            model_id_tag = f'                <modelId>{model_id}</modelId>'
         
         body = f'''        <tns:getSBDBundles xmlns:tns="{self.IWS_NS}">
             <request>
@@ -308,36 +314,37 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
-                {model_id_tag}
+                <plan>
+                    <fromBundleId>{from_bundle_id}</fromBundleId>
+                    <forActivate>{for_activate_str}</forActivate>
+{model_id_tag}
+                </plan>
             </request>
         </tns:getSBDBundles>'''
         
         return action_name, body
     
-    def _build_update_subscriber_plan_body(self,
-                                           imei: str,
-                                           new_plan_id: str,
-                                           demo_and_trial: bool = False,
-                                           lrit_flagstate: bool = False,
-                                           ring_alerts_flag: bool = False) -> tuple[str, str]:
+    def _build_account_update_body(self,
+                                   imei: str,
+                                   new_plan_id: str,
+                                   lrit_flagstate: str = "",
+                                   ring_alerts_flag: bool = False) -> tuple[str, str]:
         """
-        構建 updateSubscriberSbdPlan 的 SOAP Body
+        構建 accountUpdate 的 SOAP Body
         
-        v6.7: 修正 plan 標籤順序（完全符合 WSDL Schema）
-        變更設備費率方案
+        根據 WSDL p.67, 271-272, 286
+        用於更新 SBD 設備的費率方案
         
         Args:
             imei: 設備 IMEI
-            new_plan_id: 新的 SBD Bundle ID（會自動轉換為純數字）
-            demo_and_trial: Demo and Trial（預設 False）
-            lrit_flagstate: LRIT Flag State（預設 False）
-            ring_alerts_flag: Ring Alerts Flag（預設 False）
+            new_plan_id: 新的 SBD Bundle ID
+            lrit_flagstate: LRIT Flag State（3字元或空字串）
+            ring_alerts_flag: Ring Alerts Flag
             
         Returns:
             tuple: (action_name, soap_body)
         """
-        action_name = 'updateSubscriberSbdPlan'
+        action_name = 'accountUpdate'
         timestamp = self._generate_timestamp()
         signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
@@ -345,66 +352,25 @@ class IWSGateway:
         # 提取純數字
         plan_id_digits = self._extract_plan_id_digits(new_plan_id)
         
-        # 布林值轉換為數字（Long 型別）
-        lrit_flagstate_value = self._bool_to_int(lrit_flagstate)
-        demo_and_trial_value = self._bool_to_int(demo_and_trial)
-        ring_alerts_flag_value = self._bool_to_int(ring_alerts_flag)
+        # Boolean 轉字串
+        ring_alerts_str = self._bool_to_string(ring_alerts_flag)
         
-        # v6.7: 嚴格按照 Schema 順序
-        # 順序: lritFlagstate → demoAndTrial → sbdBundleId → ringAlertsFlag
-        body = f'''        <tns:updateSubscriberSbdPlan xmlns:tns="{self.IWS_NS}">
+        body = f'''        <tns:accountUpdate xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
-                <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
-                <value>{imei}</value>
-                <plan>
-                    <lritFlagstate>{lrit_flagstate_value}</lritFlagstate>
-                    <demoAndTrial>{demo_and_trial_value}</demoAndTrial>
-                    <sbdBundleId>{plan_id_digits}</sbdBundleId>
-                    <ringAlertsFlag>{ring_alerts_flag_value}</ringAlertsFlag>
-                </plan>
+                <sbdSubscriberAccount2>
+                    <imei>{imei}</imei>
+                    <plan>
+                        <sbdBundleId>{plan_id_digits}</sbdBundleId>
+                        <lritFlagstate>{lrit_flagstate}</lritFlagstate>
+                        <ringAlertsFlag>{ring_alerts_str}</ringAlertsFlag>
+                    </plan>
+                </sbdSubscriberAccount2>
             </request>
-        </tns:updateSubscriberSbdPlan>'''
-        
-        return action_name, body
-    
-    def _build_deactivate_subscriber_body(self,
-                                          imei: str,
-                                          reason: str = '系統自動註銷') -> tuple[str, str]:
-        """
-        構建 deactivateSubscriber 的 SOAP Body
-        
-        v6.6/v6.7: 統一認證結構（無 caller 標籤）
-        註銷設備
-        
-        Args:
-            imei: 設備 IMEI
-            reason: 註銷原因
-            
-        Returns:
-            tuple: (action_name, soap_body)
-        """
-        action_name = 'deactivateSubscriber'
-        timestamp = self._generate_timestamp()
-        signature = self._generate_signature(action_name, timestamp)
-        sp_account = self._safe_xml_value(self.sp_account)
-        
-        body = f'''        <tns:deactivateSubscriber xmlns:tns="{self.IWS_NS}">
-            <request>
-                <iwsUsername>{self.username}</iwsUsername>
-                <signature>{signature}</signature>
-                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
-                <timestamp>{timestamp}</timestamp>
-                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
-                <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
-                <value>{imei}</value>
-                <reason>{reason}</reason>
-            </request>
-        </tns:deactivateSubscriber>'''
+        </tns:accountUpdate>'''
         
         return action_name, body
     
@@ -417,9 +383,16 @@ class IWSGateway:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
         
-        v6.6/v6.7: 統一認證結構（無 caller 標籤）
-        暫停或恢復設備
+        根據 WSDL p.224
+        用於暫停、恢復或註銷設備
         
+        Args:
+            imei: 設備 IMEI
+            new_status: 新狀態（ACTIVE, SUSPENDED, DEACTIVATED）
+            reason: 原因
+            service_type: 服務類型
+            update_type: 更新類型
+            
         Returns:
             tuple: (action_name, soap_body)
         """
@@ -467,8 +440,8 @@ class IWSGateway:
             print(f"\n[IWS] Request Headers:")
             for key, value in headers.items():
                 print(f"  {key}: {value}")
-            print(f"\n[IWS] SOAP Envelope (first 500 chars):")
-            print(soap_envelope[:500])
+            print(f"\n[IWS] SOAP Envelope (first 800 chars):")
+            print(soap_envelope[:800])
             print(f"{'='*60}\n")
             
             response = requests.post(
@@ -586,7 +559,7 @@ class IWSGateway:
                 './/transactionId',
                 './/TransactionId',
                 './/{http://www.iridium.com/}transactionId',
-                './/updateSubscriberSbdPlanResponse/transactionId',
+                './/accountUpdateResponse/transactionId',
                 './/response/transactionId'
             ]
             
@@ -611,10 +584,10 @@ class IWSGateway:
             root = ET.fromstring(xml_response)
             bundles = []
             
-            # 尋找所有 sbdBundle 元素
-            bundle_elements = root.findall('.//sbdBundle')
+            # 尋找所有 bundle 元素（可能有多種類型）
+            bundle_elements = root.findall('.//bundle')
             if not bundle_elements:
-                bundle_elements = root.findall('.//{http://www.iridium.com/}sbdBundle')
+                bundle_elements = root.findall('.//{http://www.iridium.com/}bundle')
             
             for bundle_elem in bundle_elements:
                 bundle = {}
@@ -641,7 +614,7 @@ class IWSGateway:
         print("="*60)
         print("Method: getSystemStatus")
         print("Signature: HMAC-SHA1 + Base64 ✓")
-        print("Authentication: Unified (v6.7)")
+        print("WSDL: v25.1.0.1 ✓")
         print("="*60 + "\n")
         
         try:
@@ -676,11 +649,18 @@ class IWSGateway:
             print("="*60 + "\n")
             raise
     
-    def get_sbd_bundles(self, model_id: Optional[str] = None) -> Dict:
+    def get_sbd_bundles(self, 
+                       from_bundle_id: str = "0",
+                       for_activate: bool = True,
+                       model_id: Optional[str] = None) -> Dict:
         """
         查詢可用的 SBD 方案
         
+        根據 WSDL p.161-162
+        
         Args:
+            from_bundle_id: 現有 bundle ID（新啟用用 "0"）
+            for_activate: 是否為新啟用（True=新啟用, False=更新現有）
             model_id: 可選的設備型號 ID
             
         Returns:
@@ -689,12 +669,18 @@ class IWSGateway:
         print("\n" + "="*60)
         print("📋 [IWS] Fetching SBD bundles...")
         print("="*60)
+        print(f"From Bundle ID: {from_bundle_id}")
+        print(f"For Activate: {for_activate}")
         if model_id:
             print(f"Model ID: {model_id}")
         print("="*60 + "\n")
         
         try:
-            action_name, soap_body = self._build_get_sbd_bundles_body(model_id)
+            action_name, soap_body = self._build_get_sbd_bundles_body(
+                from_bundle_id=from_bundle_id,
+                for_activate=for_activate,
+                model_id=model_id
+            )
             
             response_xml = self._send_soap_request(
                 soap_action=action_name,
@@ -730,18 +716,18 @@ class IWSGateway:
     def update_subscriber_plan(self,
                               imei: str,
                               new_plan_id: str,
-                              demo_and_trial: bool = False,
-                              lrit_flagstate: bool = False,
+                              lrit_flagstate: str = "",
                               ring_alerts_flag: bool = False) -> Dict:
         """
         變更設備費率方案
         
+        使用 accountUpdate 方法（根據 WSDL p.67）
+        
         Args:
             imei: 設備 IMEI
             new_plan_id: 新的 SBD Bundle ID（支援 "SBD12" 或 "12" 格式）
-            demo_and_trial: Demo and Trial（預設 False）
-            lrit_flagstate: LRIT Flag State（預設 False）
-            ring_alerts_flag: Ring Alerts Flag（預設 False）
+            lrit_flagstate: LRIT Flag State（3字元或空字串）
+            ring_alerts_flag: Ring Alerts Flag
             
         Returns:
             Dict: 操作結果
@@ -753,16 +739,14 @@ class IWSGateway:
         print("="*60)
         print(f"IMEI: {imei}")
         print(f"New Plan: {new_plan_id}")
-        print(f"lritFlagstate: {lrit_flagstate} → {self._bool_to_int(lrit_flagstate)}")
-        print(f"demoAndTrial: {demo_and_trial} → {self._bool_to_int(demo_and_trial)}")
-        print(f"ringAlertsFlag: {ring_alerts_flag} → {self._bool_to_int(ring_alerts_flag)}")
+        print(f"LRIT Flagstate: '{lrit_flagstate}'")
+        print(f"Ring Alerts: {ring_alerts_flag}")
         print("="*60 + "\n")
         
         try:
-            action_name, soap_body = self._build_update_subscriber_plan_body(
+            action_name, soap_body = self._build_account_update_body(
                 imei=imei,
                 new_plan_id=new_plan_id,
-                demo_and_trial=demo_and_trial,
                 lrit_flagstate=lrit_flagstate,
                 ring_alerts_flag=ring_alerts_flag
             )
@@ -794,60 +778,21 @@ class IWSGateway:
         except Exception as e:
             raise IWSException(f"Unexpected error during plan update: {str(e)}")
     
-    def deactivate_subscriber(self,
-                             imei: str,
-                             reason: str = '系統自動註銷') -> Dict:
+    def suspend_subscriber(self, 
+                          imei: str,
+                          reason: str = '系統自動暫停') -> Dict:
         """
-        註銷設備
+        暫停 SBD 設備
+        
+        使用 setSubscriberAccountStatus（根據 WSDL p.224）
         
         Args:
             imei: 設備 IMEI
-            reason: 註銷原因
+            reason: 暫停原因
             
         Returns:
             Dict: 操作結果
         """
-        self._validate_imei(imei)
-        
-        print("\n" + "="*60)
-        print("🔴 [IWS] Deactivating subscriber...")
-        print("="*60)
-        print(f"IMEI: {imei}")
-        print(f"Reason: {reason}")
-        print("="*60 + "\n")
-        
-        try:
-            action_name, soap_body = self._build_deactivate_subscriber_body(
-                imei=imei,
-                reason=reason
-            )
-            
-            response_xml = self._send_soap_request(
-                soap_action=action_name,
-                soap_body=soap_body
-            )
-            
-            print("\n" + "="*60)
-            print("✅ Subscriber deactivated successfully")
-            print("="*60 + "\n")
-            
-            return {
-                'success': True,
-                'message': 'Subscriber deactivated successfully',
-                'imei': imei,
-                'reason': reason,
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }
-            
-        except IWSException:
-            raise
-        except Exception as e:
-            raise IWSException(f"Unexpected error during deactivation: {str(e)}")
-    
-    def suspend_subscriber(self, 
-                          imei: str,
-                          reason: str = '系統自動暫停') -> Dict:
-        """暫停 SBD 設備"""
         self._validate_imei(imei)
         
         print("\n" + "="*60)
@@ -890,7 +835,18 @@ class IWSGateway:
     def resume_subscriber(self, 
                          imei: str,
                          reason: str = '系統自動恢復') -> Dict:
-        """恢復 SBD 設備"""
+        """
+        恢復 SBD 設備
+        
+        使用 setSubscriberAccountStatus（根據 WSDL p.224）
+        
+        Args:
+            imei: 設備 IMEI
+            reason: 恢復原因
+            
+        Returns:
+            Dict: 操作結果
+        """
         self._validate_imei(imei)
         
         print("\n" + "="*60)
@@ -929,6 +885,60 @@ class IWSGateway:
             raise
         except Exception as e:
             raise IWSException(f"Unexpected error during resumption: {str(e)}")
+    
+    def deactivate_subscriber(self,
+                             imei: str,
+                             reason: str = '系統自動註銷') -> Dict:
+        """
+        註銷設備
+        
+        使用 setSubscriberAccountStatus（根據 WSDL p.224）
+        
+        Args:
+            imei: 設備 IMEI
+            reason: 註銷原因
+            
+        Returns:
+            Dict: 操作結果
+        """
+        self._validate_imei(imei)
+        
+        print("\n" + "="*60)
+        print("🔴 [IWS] Deactivating subscriber...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print(f"Reason: {reason}")
+        print("="*60 + "\n")
+        
+        try:
+            action_name, soap_body = self._build_set_subscriber_account_status_body(
+                imei=imei,
+                new_status=self.ACCOUNT_STATUS_DEACTIVATED,
+                reason=reason
+            )
+            
+            response_xml = self._send_soap_request(
+                soap_action=action_name,
+                soap_body=soap_body
+            )
+            
+            print("\n" + "="*60)
+            print("✅ Subscriber deactivated successfully")
+            print("="*60 + "\n")
+            
+            return {
+                'success': True,
+                'message': 'Subscriber deactivated successfully',
+                'imei': imei,
+                'new_status': self.ACCOUNT_STATUS_DEACTIVATED,
+                'reason': reason,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except IWSException:
+            raise
+        except Exception as e:
+            raise IWSException(f"Unexpected error during deactivation: {str(e)}")
 
 
 # ==================== 便利函數 ====================
@@ -939,22 +949,21 @@ def check_iws_connection() -> Dict:
     return gateway.check_connection()
 
 
-def get_sbd_bundles(model_id: Optional[str] = None) -> Dict:
+def get_sbd_bundles(from_bundle_id: str = "0", 
+                   for_activate: bool = True,
+                   model_id: Optional[str] = None) -> Dict:
     """便利函數：查詢 SBD 方案"""
     gateway = IWSGateway()
-    return gateway.get_sbd_bundles(model_id)
+    return gateway.get_sbd_bundles(from_bundle_id, for_activate, model_id)
 
 
-def update_subscriber_plan(imei: str, new_plan_id: str, demo_and_trial: bool = False) -> Dict:
+def update_subscriber_plan(imei: str, 
+                          new_plan_id: str,
+                          lrit_flagstate: str = "",
+                          ring_alerts_flag: bool = False) -> Dict:
     """便利函數：變更設備費率"""
     gateway = IWSGateway()
-    return gateway.update_subscriber_plan(imei, new_plan_id, demo_and_trial)
-
-
-def deactivate_subscriber(imei: str, reason: str = '系統自動註銷') -> Dict:
-    """便利函數：註銷設備"""
-    gateway = IWSGateway()
-    return gateway.deactivate_subscriber(imei, reason)
+    return gateway.update_subscriber_plan(imei, new_plan_id, lrit_flagstate, ring_alerts_flag)
 
 
 def suspend_sbd_device(imei: str, reason: str = '系統自動暫停') -> Dict:
@@ -967,3 +976,9 @@ def resume_sbd_device(imei: str, reason: str = '系統自動恢復') -> Dict:
     """便利函數：恢復 SBD 設備"""
     gateway = IWSGateway()
     return gateway.resume_subscriber(imei=imei, reason=reason)
+
+
+def deactivate_sbd_device(imei: str, reason: str = '系統自動註銷') -> Dict:
+    """便利函數：註銷 SBD 設備"""
+    gateway = IWSGateway()
+    return gateway.deactivate_subscriber(imei=imei, reason=reason)
