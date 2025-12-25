@@ -222,13 +222,13 @@ class SBDService:
             result = None
             
             if request.action_type == ActionType.ACTIVATE:
-                result = iws_gateway.activate_device(request.imei, request.plan_id)
+                result = iws_gateway.activate_subscriber(request.imei, request.plan_id)
                 
             elif request.action_type == ActionType.SUSPEND:
-                result = iws_gateway.suspend_device(request.imei)
+                result = iws_gateway.suspend_subscriber(request.imei)
                 
             elif request.action_type == ActionType.RESUME:
-                result = iws_gateway.resume_device(request.imei)
+                result = iws_gateway.resume_subscriber(request.imei)
                 
             else:
                 raise ValueError(f"Unknown action type: {request.action_type}")
