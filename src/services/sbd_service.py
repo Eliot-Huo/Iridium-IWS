@@ -1,17 +1,18 @@
 """
-SBD 服務業務邏輯（已整合 IWS Gateway）
+SBD 服務業務邏輯（v6.5 Asset Management Edition）
+已整合 IWS Gateway v6.5 - 資產管理專用版
 """
 from __future__ import annotations
 from typing import Optional
 from datetime import datetime
 from ..models.models import ServiceRequest, ActionType, RequestStatus
 from ..repositories.repo import InMemoryRepository
-from ..config.constants import RATE_PLANS, ACTIVATION_FEE
+from ..config.constants import RATE_PLANS
 from ..infrastructure.iws_gateway import IWSGateway, IWSException
 
 
 class SBDService:
-    """SBD 服務類別"""
+    """SBD 服務類別 - 資產管理專用版"""
     
     def __init__(self, repository: InMemoryRepository, iws_gateway: Optional[IWSGateway] = None):
         """
@@ -40,47 +41,43 @@ class SBDService:
             # IWS 未配置，返回 None
             return None
     
-    def create_activation_request(
+    def create_plan_change_request(
         self, 
         imei: str, 
-        plan_id: str, 
+        new_plan_id: str, 
         requester: str
     ) -> ServiceRequest:
         """
-        建立啟用請求
+        建立費率變更請求
         
         Args:
             imei: IMEI 號碼
-            plan_id: 資費方案 ID (必須存在於 RATE_PLANS 中)
+            new_plan_id: 新的資費方案 ID
             requester: 請求者名稱
             
         Returns:
             ServiceRequest: 建立的服務請求
-            
-        Raises:
-            ValueError: 當 plan_id 不存在時
         """
         # 驗證資費方案
-        if plan_id not in RATE_PLANS:
-            raise ValueError(f"Invalid plan_id: {plan_id}. Available plans: {list(RATE_PLANS.keys())}")
+        if new_plan_id not in RATE_PLANS:
+            raise ValueError(f"Invalid plan_id: {new_plan_id}. Available plans: {list(RATE_PLANS.keys())}")
         
-        # 計算總金額：啟用費 + 月租費
-        plan_fee = RATE_PLANS[plan_id]
-        total_amount = ACTIVATION_FEE + plan_fee
+        # 費率變更無額外費用
+        plan_fee = RATE_PLANS[new_plan_id]
         
         # 生成請求 ID
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-        request_id = f"ACT-{imei[-6:]}-{timestamp}"
+        request_id = f"PLAN-{imei[-6:]}-{timestamp}"
         
         # 建立服務請求
         request = ServiceRequest(
             request_id=request_id,
             imei=imei,
-            action_type=ActionType.ACTIVATE,
-            plan_id=plan_id,
-            amount_due=total_amount,
+            action_type=ActionType.CHANGE_PLAN,
+            plan_id=new_plan_id,
+            amount_due=0.0,  # 費率變更無費用
             status=RequestStatus.PENDING_FINANCE,
-            notes=f"Requested by {requester}"
+            notes=f"Plan change to {new_plan_id} (${plan_fee:.2f}/month) requested by {requester}"
         )
         
         # 儲存至 Repository
@@ -91,6 +88,7 @@ class SBDService:
     def create_suspend_request(
         self, 
         imei: str, 
+        reason: str,
         requester: str
     ) -> ServiceRequest:
         """
@@ -98,31 +96,72 @@ class SBDService:
         
         Args:
             imei: IMEI 號碼
+            reason: 暫停原因
             requester: 請求者名稱
             
         Returns:
             ServiceRequest: 建立的服務請求
         """
+        # 生成請求 ID
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-        request_id = f"SUS-{imei[-6:]}-{timestamp}"
+        request_id = f"SUSP-{imei[-6:]}-{timestamp}"
         
+        # 建立服務請求
         request = ServiceRequest(
             request_id=request_id,
             imei=imei,
             action_type=ActionType.SUSPEND,
-            plan_id="N/A",
-            amount_due=MONTHLY_SUSPENDED_FEE,
+            plan_id='N/A',
+            amount_due=0.0,  # 暫停無費用
             status=RequestStatus.PENDING_FINANCE,
-            notes=f"Requested by {requester}"
+            notes=f"Suspend requested by {requester} | Reason: {reason}"
         )
         
+        # 儲存至 Repository
         self._repository.save_request(request)
+        
+        return request
+    
+    def create_deactivate_request(
+        self, 
+        imei: str, 
+        reason: str,
+        requester: str
+    ) -> ServiceRequest:
+        """
+        建立註銷服務請求
+        
+        Args:
+            imei: IMEI 號碼
+            reason: 註銷原因
+            requester: 請求者名稱
+            
+        Returns:
+            ServiceRequest: 建立的服務請求
+        """
+        # 生成請求 ID
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        request_id = f"DEACT-{imei[-6:]}-{timestamp}"
+        
+        # 建立服務請求
+        request = ServiceRequest(
+            request_id=request_id,
+            imei=imei,
+            action_type=ActionType.DEACTIVATE,
+            plan_id='N/A',
+            amount_due=0.0,  # 註銷無費用
+            status=RequestStatus.PENDING_FINANCE,
+            notes=f"Deactivate requested by {requester} | Reason: {reason}"
+        )
+        
+        # 儲存至 Repository
+        self._repository.save_request(request)
+        
         return request
     
     def create_resume_request(
         self, 
         imei: str, 
-        plan_id: str,
         requester: str
     ) -> ServiceRequest:
         """
@@ -130,31 +169,29 @@ class SBDService:
         
         Args:
             imei: IMEI 號碼
-            plan_id: 資費方案 ID
             requester: 請求者名稱
             
         Returns:
             ServiceRequest: 建立的服務請求
         """
-        if plan_id not in RATE_PLANS:
-            raise ValueError(f"Invalid plan_id: {plan_id}")
-        
-        plan_fee = RATE_PLANS[plan_id]
-        
+        # 生成請求 ID
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-        request_id = f"RES-{imei[-6:]}-{timestamp}"
+        request_id = f"RESM-{imei[-6:]}-{timestamp}"
         
+        # 建立服務請求
         request = ServiceRequest(
             request_id=request_id,
             imei=imei,
             action_type=ActionType.RESUME,
-            plan_id=plan_id,
-            amount_due=plan_fee,
+            plan_id='N/A',
+            amount_due=0.0,  # 恢復無費用
             status=RequestStatus.PENDING_FINANCE,
-            notes=f"Requested by {requester}"
+            notes=f"Resume requested by {requester}"
         )
         
+        # 儲存至 Repository
         self._repository.save_request(request)
+        
         return request
     
     def process_finance_approval(
@@ -162,40 +199,37 @@ class SBDService:
         request_id: str, 
         assistant_name: str,
         execute_iws: bool = True
-    ) -> Optional[ServiceRequest]:
+    ) -> ServiceRequest:
         """
-        處理財務核准並自動觸發 IWS 執行
+        處理財務核准流程（支援 v6.5 資產管理功能）
         
-        工作流程：
-        1. 驗證請求狀態 (必須為 PENDING_FINANCE)
-        2. 核准請求 → 狀態變更為 APPROVED
-        3. 初始化 IWSGateway
-        4. 根據請求類型呼叫對應的 IWS 方法
-        5. 成功：寫入 TransactionID，狀態變更為 EXECUTED
-        6. 失敗：記錄錯誤，保持 APPROVED 狀態供人工介入
+        流程：
+        1. 驗證請求狀態
+        2. 核准請求 (PENDING_FINANCE → APPROVED)
+        3. 執行 IWS 操作 (APPROVED → EXECUTED)
         
         Args:
             request_id: 請求 ID
-            assistant_name: 助理名稱
-            execute_iws: 是否自動執行 IWS（預設 True）
+            assistant_name: 助理姓名
+            execute_iws: 是否執行 IWS（預設 True）
             
         Returns:
-            ServiceRequest: 更新後的服務請求，若請求不存在則回傳 None
+            ServiceRequest: 更新後的服務請求
             
         Raises:
-            ValueError: 當請求狀態不是 PENDING_FINANCE 時
-            IWSException: 當 IWS 執行失敗時（已記錄錯誤，保持 APPROVED 狀態）
+            ValueError: 請求不存在或狀態不正確
+            IWSException: IWS 執行失敗（請求保持 APPROVED 狀態）
         """
         # ========== 步驟 1: 驗證請求 ==========
         request = self._repository.get_request(request_id)
         
         if request is None:
-            return None
+            raise ValueError(f"Request {request_id} not found")
         
         if request.status != RequestStatus.PENDING_FINANCE:
             raise ValueError(
-                f"Request {request_id} cannot be approved. "
-                f"Current status: {request.status.value}, expected: pending_finance"
+                f"Request {request_id} is not in PENDING_FINANCE status. "
+                f"Current status: {request.status.value}"
             )
         
         # ========== 步驟 2: 核准請求 (狀態 → APPROVED) ==========
@@ -221,14 +255,34 @@ class SBDService:
             # ========== 步驟 4: 根據請求類型呼叫對應的 IWS 方法 ==========
             result = None
             
-            if request.action_type == ActionType.ACTIVATE:
-                result = iws_gateway.activate_subscriber(request.imei, request.plan_id)
+            if request.action_type == ActionType.CHANGE_PLAN:
+                # 費率變更
+                result = iws_gateway.update_subscriber_plan(
+                    imei=request.imei,
+                    new_plan_id=request.plan_id,
+                    demo_and_trial=False  # v6.5: 使用布林值，自動轉換為 0
+                )
                 
             elif request.action_type == ActionType.SUSPEND:
-                result = iws_gateway.suspend_subscriber(request.imei)
+                # 暫停設備
+                result = iws_gateway.suspend_subscriber(
+                    imei=request.imei,
+                    reason=request.notes or '系統自動暫停'
+                )
                 
             elif request.action_type == ActionType.RESUME:
-                result = iws_gateway.resume_subscriber(request.imei)
+                # 恢復設備
+                result = iws_gateway.resume_subscriber(
+                    imei=request.imei,
+                    reason=request.notes or '系統自動恢復'
+                )
+                
+            elif request.action_type == ActionType.DEACTIVATE:
+                # 註銷設備
+                result = iws_gateway.deactivate_subscriber(
+                    imei=request.imei,
+                    reason=request.notes or '系統自動註銷'
+                )
                 
             else:
                 raise ValueError(f"Unknown action type: {request.action_type}")
@@ -248,7 +302,7 @@ class SBDService:
                     f" | TransactionID: {transaction_id}"
                     f" | Action: {request.action_type.value}"
                     f" | IMEI: {request.imei}"
-                    f" | Timestamp: {execution_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f" | Timestamp: {execution_timestamp}"
                 )
                 
                 # 儲存成功執行的請求
@@ -262,7 +316,7 @@ class SBDService:
             error_code = getattr(e, 'error_code', 'UNKNOWN')
             response_text = getattr(e, 'response_text', None)
             
-            # 記錄詳細的錯誤資訊（包含完整 response_text）
+            # 記錄詳細的錯誤資訊
             request.notes += (
                 f" | ❌ IWS Execution Failed"
                 f" | Error Code: {error_code}"
@@ -321,6 +375,15 @@ class SBDService:
         # 正常情況下不應該到達這裡
         self._repository.save_request(request)
         return request
+    
+    def get_available_plans(self) -> dict:
+        """
+        取得可用的資費方案
+        
+        Returns:
+            dict: 資費方案字典 {plan_id: monthly_fee}
+        """
+        return RATE_PLANS.copy()
     
     def get_request(self, request_id: str) -> Optional[ServiceRequest]:
         """取得請求"""

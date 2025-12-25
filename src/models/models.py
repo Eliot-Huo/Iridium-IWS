@@ -31,6 +31,8 @@ class ActionType(Enum):
     SUSPEND = "suspend"
     RESUME = "resume"
     TERMINATE = "terminate"
+    CHANGE_PLAN = "change_plan"  # v6.5: 費率變更
+    DEACTIVATE = "deactivate"  # v6.5: 註銷設備
 
 
 @dataclass
