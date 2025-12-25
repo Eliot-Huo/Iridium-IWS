@@ -5,7 +5,7 @@ import streamlit as st
 from datetime import datetime
 from src.repositories.repo import InMemoryRepository
 from src.services.sbd_service import SBDService
-from src.services.cdr_service_tapii import CDRService
+from src.services.cdr_service import CDRService
 from src.models.models import UserRole, RequestStatus
 from src.config.constants import RATE_PLANS, ACTIVATION_FEE
 
