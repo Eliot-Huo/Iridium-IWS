@@ -98,7 +98,7 @@ def render_cdr_monitor():
                     '費用 ($)': f'${record.cost:.2f}'
                 })
             
-            st.dataframe(display_data, use_container_width=True)
+            st.dataframe(display_data, width='stretch')
             
             # 統計資訊
             total_cost = CDRService.calculate_total_cost(records)
