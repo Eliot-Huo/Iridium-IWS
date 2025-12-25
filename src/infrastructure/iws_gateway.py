@@ -1,11 +1,12 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.1 Final
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.2 Final
 完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
 
-v6.1 修正：
+v6.2 修正：
 - HMAC-SHA1 + Base64 簽章（已驗證成功）
-- plan_id 自動轉換為純數字（SBD12 → 12）
-- 新增 get_sbd_bundles 方法查詢可用方案
+- plan_id 自動轉換為純數字（已驗證）
+- 新增 demoAndTrialBundle 必填欄位
+- 補全 callerPassword 身份驗證標籤
 """
 from __future__ import annotations
 import requests
@@ -39,7 +40,7 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.1 Final
+    IWS SOAP 1.2 API Gateway v6.2 Final
     完全符合 WSDL 定義與 IWS 簽章規範
     
     簽章算法（已驗證成功）：
@@ -251,6 +252,7 @@ class IWSGateway:
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
+                <callerPassword>{self.password}</callerPassword>
             </request>
         </tns:getSystemStatus>'''
         
@@ -285,6 +287,7 @@ class IWSGateway:
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
+                <callerPassword>{self.password}</callerPassword>
                 {model_id_tag}
             </request>
         </tns:getSBDBundles>'''
@@ -299,12 +302,14 @@ class IWSGateway:
                                        geo_data_flag: str = 'false',
                                        mo_ack_flag: str = 'false',
                                        lrit_flagstate: str = '',
-                                       ring_alerts_flag: str = 'false') -> tuple[str, str]:
+                                       ring_alerts_flag: str = 'false',
+                                       demo_and_trial: str = 'false') -> tuple[str, str]:
         """
         構建 activateSubscriber 的 SOAP Body
         
         Args:
             plan_id: SBD Bundle ID（會自動轉換為純數字）
+            demo_and_trial: Demo and Trial Bundle（預設 'false'）
             
         Returns:
             tuple: (action_name, soap_body)
@@ -331,9 +336,11 @@ class IWSGateway:
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
+                <callerPassword>{self.password}</callerPassword>
                 <sbdSubscriberAccount>
                     <plan>
                         <sbdBundleId>{plan_id_digits}</sbdBundleId>
+                        <demoAndTrialBundle>{demo_and_trial}</demoAndTrialBundle>
                         <lritFlagstate>{lrit_flagstate}</lritFlagstate>
                         <ringAlertsFlag>{ring_alerts_flag}</ringAlertsFlag>
                     </plan>
@@ -376,6 +383,7 @@ class IWSGateway:
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
+                <callerPassword>{self.password}</callerPassword>
                 <serviceType>{service_type}</serviceType>
                 <updateType>{update_type}</updateType>
                 <value>{imei}</value>
@@ -676,12 +684,21 @@ class IWSGateway:
                           geo_data_flag: str = 'false',
                           mo_ack_flag: str = 'false',
                           lrit_flagstate: str = '',
-                          ring_alerts_flag: str = 'false') -> Dict:
+                          ring_alerts_flag: str = 'false',
+                          demo_and_trial: str = 'false') -> Dict:
         """
         啟用 SBD 設備
         
         Args:
+            imei: 設備 IMEI
             plan_id: SBD Bundle ID（支援 "SBD12" 或 "12" 格式，會自動轉換為純數字）
+            destination: 接收目的地
+            delivery_method: 傳遞方式
+            geo_data_flag: 地理資料標記
+            mo_ack_flag: MO 確認標記
+            lrit_flagstate: LRIT 標記狀態
+            ring_alerts_flag: 響鈴提醒標記
+            demo_and_trial: Demo and Trial Bundle（預設 'false'）
         """
         self._validate_imei(imei)
         
@@ -705,7 +722,8 @@ class IWSGateway:
                 geo_data_flag=geo_data_flag,
                 mo_ack_flag=mo_ack_flag,
                 lrit_flagstate=lrit_flagstate,
-                ring_alerts_flag=ring_alerts_flag
+                ring_alerts_flag=ring_alerts_flag,
+                demo_and_trial=demo_and_trial
             )
             
             response_xml = self._send_soap_request(
@@ -727,6 +745,7 @@ class IWSGateway:
                 'plan_id_digits': plan_id_digits,
                 'delivery_method': delivery_method,
                 'destination': destination,
+                'demo_and_trial': demo_and_trial,
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
@@ -817,14 +836,16 @@ def get_sbd_bundles(model_id: Optional[str] = None) -> Dict:
 def activate_sbd_device(imei: str, 
                        plan_id: str,
                        destination: Optional[str] = None,
-                       delivery_method: str = IWSGateway.DELIVERY_METHOD_DIRECT_IP) -> Dict:
+                       delivery_method: str = IWSGateway.DELIVERY_METHOD_DIRECT_IP,
+                       demo_and_trial: str = 'false') -> Dict:
     """便利函數：啟用 SBD 設備"""
     gateway = IWSGateway()
     return gateway.activate_subscriber(
         imei=imei,
         plan_id=plan_id,
         destination=destination,
-        delivery_method=delivery_method
+        delivery_method=delivery_method,
+        demo_and_trial=demo_and_trial
     )
 
 
