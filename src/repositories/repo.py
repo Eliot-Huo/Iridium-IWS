@@ -3,7 +3,7 @@
 """
 from __future__ import annotations
 from typing import Dict, Optional, List
-from ..models import ServiceRequest
+from ..models.models import ServiceRequest
 
 
 class InMemoryRepository:
