@@ -278,6 +278,39 @@ class IWSGateway:
         
         return action_name, body
     
+    def _build_account_search_body(self, imei: str) -> tuple[str, str]:
+        """
+        構建 accountSearch 的 SOAP Body
+        
+        根據 WSDL p.62
+        用 IMEI 搜尋訂閱者帳號
+        
+        Args:
+            imei: 設備 IMEI
+            
+        Returns:
+            tuple: (action_name, soap_body)
+        """
+        action_name = 'accountSearch'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        sp_account = self._safe_xml_value(self.sp_account)
+        
+        body = f'''        <tns:accountSearch xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
+                <filterType>IMEI</filterType>
+                <filterCond>EXACT</filterCond>
+                <filterValue>{imei}</filterValue>
+            </request>
+        </tns:accountSearch>'''
+        
+        return action_name, body
+    
     def _build_get_sbd_bundles_body(self, 
                                     from_bundle_id: str = "0",
                                     for_activate: bool = True,
@@ -326,6 +359,7 @@ class IWSGateway:
     
     def _build_account_update_body(self,
                                    imei: str,
+                                   subscriber_account_number: str,
                                    new_plan_id: str,
                                    lrit_flagstate: str = "",
                                    ring_alerts_flag: bool = False) -> tuple[str, str]:
@@ -337,6 +371,7 @@ class IWSGateway:
         
         Args:
             imei: 設備 IMEI
+            subscriber_account_number: 訂閱者帳號（必填）
             new_plan_id: 新的 SBD Bundle ID
             lrit_flagstate: LRIT Flag State（3字元或空字串）
             ring_alerts_flag: Ring Alerts Flag
@@ -362,7 +397,9 @@ class IWSGateway:
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <sbdSubscriberAccount2>
+                    <subscriberAccountNumber>{subscriber_account_number}</subscriberAccountNumber>
                     <imei>{imei}</imei>
+                    <bulkAction>FALSE</bulkAction>
                     <plan>
                         <sbdBundleId>{plan_id_digits}</sbdBundleId>
                         <lritFlagstate>{lrit_flagstate}</lritFlagstate>
@@ -605,6 +642,34 @@ class IWSGateway:
             print(f"[IWS] Failed to parse SBD bundles: {e}")
             return []
     
+    def _parse_account_search(self, xml_response: str) -> Optional[str]:
+        """
+        解析 accountSearch 回應，提取 subscriberAccountNumber
+        
+        Returns:
+            Optional[str]: 訂閱者帳號或 None
+        """
+        try:
+            root = ET.fromstring(xml_response)
+            
+            # 尋找 subscriberAccountNumber
+            paths = [
+                './/subscriberAccountNumber',
+                './/{http://www.iridium.com/}subscriberAccountNumber',
+                './/sbdSubscriberAccount/subscriberAccountNumber',
+            ]
+            
+            for path in paths:
+                elem = root.find(path)
+                if elem is not None and elem.text:
+                    return elem.text.strip()
+            
+            return None
+            
+        except ET.ParseError as e:
+            print(f"[IWS] Failed to parse account search: {e}")
+            return None
+    
     # ==================== 公開 API 方法 ====================
     
     def check_connection(self) -> Dict:
@@ -723,6 +788,10 @@ class IWSGateway:
         
         使用 accountUpdate 方法（根據 WSDL p.67）
         
+        工作流程：
+        1. 用 accountSearch 查詢 subscriberAccountNumber
+        2. 用 accountUpdate 更新費率
+        
         Args:
             imei: 設備 IMEI
             new_plan_id: 新的 SBD Bundle ID（支援 "SBD12" 或 "12" 格式）
@@ -744,8 +813,27 @@ class IWSGateway:
         print("="*60 + "\n")
         
         try:
+            # 步驟 1: 用 IMEI 搜尋訂閱者帳號
+            print("[IWS] Step 1: Searching for subscriber account...")
+            search_action, search_body = self._build_account_search_body(imei)
+            
+            search_response = self._send_soap_request(
+                soap_action=search_action,
+                soap_body=search_body
+            )
+            
+            subscriber_account_number = self._parse_account_search(search_response)
+            
+            if not subscriber_account_number:
+                raise IWSException(f"Account not found for IMEI: {imei}")
+            
+            print(f"[IWS] Found account: {subscriber_account_number}")
+            
+            # 步驟 2: 更新費率
+            print("[IWS] Step 2: Updating plan...")
             action_name, soap_body = self._build_account_update_body(
                 imei=imei,
+                subscriber_account_number=subscriber_account_number,
                 new_plan_id=new_plan_id,
                 lrit_flagstate=lrit_flagstate,
                 ring_alerts_flag=ring_alerts_flag
@@ -768,6 +856,7 @@ class IWSGateway:
                 'transaction_id': transaction_id or 'N/A',
                 'message': 'Subscriber plan updated successfully',
                 'imei': imei,
+                'subscriber_account_number': subscriber_account_number,
                 'new_plan_id': new_plan_id,
                 'plan_id_digits': plan_id_digits,
                 'timestamp': datetime.now(timezone.utc).isoformat()
