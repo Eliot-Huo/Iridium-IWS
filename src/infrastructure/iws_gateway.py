@@ -1,12 +1,11 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.0 Final
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.1 Final
 完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
 
-v6.0 正確的簽章算法實作：
-- HMAC-SHA1 + Base64 編碼
-- Message: Action名稱 + 時間戳記
-- Key: Secret Key (password)
-- 參考文件：IWS Technical Documentation
+v6.1 修正：
+- HMAC-SHA1 + Base64 簽章（已驗證成功）
+- plan_id 自動轉換為純數字（SBD12 → 12）
+- 新增 get_sbd_bundles 方法查詢可用方案
 """
 from __future__ import annotations
 import requests
@@ -16,7 +15,7 @@ import re
 import hmac
 import hashlib
 import base64
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from datetime import datetime, timezone
 from ..config.settings import (
     IWS_USER, 
@@ -40,21 +39,19 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.0 Final
+    IWS SOAP 1.2 API Gateway v6.1 Final
     完全符合 WSDL 定義與 IWS 簽章規範
     
-    簽章算法（正確）：
+    簽章算法（已驗證成功）：
     - Algorithm: HMAC-SHA1
     - Message: Action名稱 + 時間戳記（無空格）
     - Key: Secret Key (password)
     - Encoding: Base64
     
-    範例：
-    - Action: getSystemStatus
-    - Timestamp: 2025-12-25T06:00:00Z
-    - Message: "getSystemStatus2025-12-25T06:00:00Z"
-    - Key: "FvGr2({sE4V4TJ:"
-    - Signature: Base64(HMAC-SHA1(key, message))
+    環境參數（已驗證）：
+    - IWS_USER: IWSN3D
+    - IWS_PASS: FvGr2({sE4V4TJ:
+    - IWS_SP_ACCOUNT: 200883
     """
     
     # SOAP 1.2 Namespaces
@@ -110,7 +107,7 @@ class IWSGateway:
             )
         
         print(f"\n[IWS] Gateway initialized")
-        print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64")
+        print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64 (Verified ✓)")
         print(f"[IWS] Username: {self.username}")
         print(f"[IWS] SP Account: {self.sp_account}")
     
@@ -134,30 +131,19 @@ class IWSGateway:
         """
         生成簽章（HMAC-SHA1 + Base64）
         
-        根據 IWS 技術文件：
-        - Message（拼接字串）：Action名稱 + 時間戳記（無空格）
-        - Key（密鑰）：Secret Key (password)
-        - Algorithm：HMAC-SHA1
-        - Encoding：Base64
-        
-        範例：
-        - Action: "getSystemStatus"
-        - Timestamp: "2025-12-25T06:00:00Z"
-        - Message: "getSystemStatus2025-12-25T06:00:00Z"
-        - Key: "FvGr2({sE4V4TJ:"
-        - Signature: Base64(HMAC-SHA1(key, message))
+        已驗證成功的算法 ✓
         
         Args:
-            action_name: SOAP Action 名稱（與 WSDL 定義完全一致）
-            timestamp: 時間戳記（與 Body 中的完全一致）
+            action_name: SOAP Action 名稱
+            timestamp: 時間戳記
             
         Returns:
             str: Base64 編碼的簽章
         """
-        # 構建 Message（Action + Timestamp，無空格）
+        # Message: Action + Timestamp（無空格）
         message = f"{action_name}{timestamp}".encode('utf-8')
         
-        # Key（Secret Key）
+        # Key: Secret Key
         key = self.password.encode('utf-8')
         
         # HMAC-SHA1 計算
@@ -169,7 +155,7 @@ class IWSGateway:
         
         # 診斷日誌
         print(f"\n[IWS] Signature Generation:")
-        print(f"  Algorithm: HMAC-SHA1 + Base64")
+        print(f"  Algorithm: HMAC-SHA1 + Base64 ✓")
         print(f"  Action: {action_name}")
         print(f"  Timestamp: {timestamp}")
         print(f"  Message: {action_name}{timestamp}")
@@ -178,6 +164,35 @@ class IWSGateway:
         print(f"  Signature Length: {len(signature_base64)} chars")
         
         return signature_base64
+    
+    def _extract_plan_id_digits(self, plan_id: str) -> str:
+        """
+        提取 plan_id 中的純數字
+        
+        sbdBundleId 欄位必須是 Long 型別（純數字字串）
+        
+        範例：
+        - "SBD12" → "12"
+        - "SBDO" → "0"
+        - "SBD17" → "17"
+        - "12" → "12"
+        
+        Args:
+            plan_id: 原始 plan ID（可能包含字母）
+            
+        Returns:
+            str: 純數字字串
+        """
+        # 移除所有非數字字元
+        digits = re.sub(r'\D', '', plan_id)
+        
+        # 如果沒有數字，預設為 "0"
+        if not digits:
+            digits = "0"
+        
+        print(f"[IWS] Plan ID conversion: '{plan_id}' → '{digits}'")
+        
+        return digits
     
     def _safe_xml_value(self, value: Optional[str]) -> str:
         """
@@ -241,6 +256,41 @@ class IWSGateway:
         
         return action_name, body
     
+    def _build_get_sbd_bundles_body(self, model_id: Optional[str] = None) -> tuple[str, str]:
+        """
+        構建 getSBDBundles 的 SOAP Body
+        
+        查詢可用的 SBD 方案
+        
+        Args:
+            model_id: 可選的設備型號 ID
+            
+        Returns:
+            tuple: (action_name, soap_body)
+        """
+        action_name = 'getSBDBundles'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        sp_account = self._safe_xml_value(self.sp_account)
+        
+        # modelId 是可選的
+        model_id_tag = ''
+        if model_id:
+            model_id_tag = f'<modelId>{model_id}</modelId>'
+        
+        body = f'''        <tns:getSBDBundles xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+                {model_id_tag}
+            </request>
+        </tns:getSBDBundles>'''
+        
+        return action_name, body
+    
     def _build_activate_subscriber_body(self,
                                        imei: str,
                                        plan_id: str,
@@ -253,6 +303,9 @@ class IWSGateway:
         """
         構建 activateSubscriber 的 SOAP Body
         
+        Args:
+            plan_id: SBD Bundle ID（會自動轉換為純數字）
+            
         Returns:
             tuple: (action_name, soap_body)
         """
@@ -268,6 +321,9 @@ class IWSGateway:
         sp_account = self._safe_xml_value(self.sp_account)
         lrit_flagstate = self._safe_xml_value(lrit_flagstate)
         
+        # 關鍵：提取純數字（SBD12 → 12）
+        plan_id_digits = self._extract_plan_id_digits(plan_id)
+        
         body = f'''        <tns:activateSubscriber xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
@@ -277,7 +333,7 @@ class IWSGateway:
                 <caller>{self.username}</caller>
                 <sbdSubscriberAccount>
                     <plan>
-                        <sbdBundleId>{plan_id}</sbdBundleId>
+                        <sbdBundleId>{plan_id_digits}</sbdBundleId>
                         <lritFlagstate>{lrit_flagstate}</lritFlagstate>
                         <ringAlertsFlag>{ring_alerts_flag}</ringAlertsFlag>
                     </plan>
@@ -333,13 +389,7 @@ class IWSGateway:
     def _send_soap_request(self, 
                           soap_action: str,
                           soap_body: str) -> str:
-        """
-        發送 SOAP 1.2 請求
-        
-        Args:
-            soap_action: SOAP Action 名稱（與簽章計算使用的完全一致）
-            soap_body: SOAP Body 內容
-        """
+        """發送 SOAP 1.2 請求"""
         soap_envelope = self._build_soap_envelope(soap_body)
         
         headers = {
@@ -492,20 +542,47 @@ class IWSGateway:
         except ET.ParseError:
             return None
     
+    def _parse_sbd_bundles(self, xml_response: str) -> List[Dict]:
+        """
+        解析 getSBDBundles 回應
+        
+        Returns:
+            List[Dict]: SBD 方案列表
+        """
+        try:
+            root = ET.fromstring(xml_response)
+            bundles = []
+            
+            # 尋找所有 sbdBundle 元素
+            bundle_elements = root.findall('.//sbdBundle')
+            if not bundle_elements:
+                bundle_elements = root.findall('.//{http://www.iridium.com/}sbdBundle')
+            
+            for bundle_elem in bundle_elements:
+                bundle = {}
+                
+                # 提取各個欄位
+                for child in bundle_elem:
+                    tag = child.tag.split('}')[-1]  # 移除命名空間
+                    bundle[tag] = child.text
+                
+                bundles.append(bundle)
+            
+            return bundles
+            
+        except ET.ParseError as e:
+            print(f"[IWS] Failed to parse SBD bundles: {e}")
+            return []
+    
     # ==================== 公開 API 方法 ====================
     
     def check_connection(self) -> Dict:
-        """
-        測試 IWS 連線
-        
-        使用 getSystemStatus 進行基礎連線測試
-        """
+        """測試 IWS 連線"""
         print("\n" + "="*60)
         print("🔍 [DIAGNOSTIC] Starting connection test...")
         print("="*60)
         print("Method: getSystemStatus")
-        print("Signature: HMAC-SHA1 + Base64")
-        print("Message: Action + Timestamp")
+        print("Signature: HMAC-SHA1 + Base64 ✓")
         print("="*60 + "\n")
         
         try:
@@ -529,7 +606,6 @@ class IWSGateway:
                 'success': True,
                 'message': 'IWS connection successful',
                 'signature_algorithm': 'HMAC-SHA1 + Base64',
-                'diagnostic': 'All layers verified',
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
@@ -537,17 +613,60 @@ class IWSGateway:
             print("\n" + "="*60)
             print("❌ [DIAGNOSTIC] Connection test FAILED!")
             print("="*60)
-            print(f"Error Code: {e.error_code}")
-            print(f"Error Message: {str(e)}")
+            print(f"Error: {str(e)}")
             print("="*60 + "\n")
             raise
-        except Exception as e:
+    
+    def get_sbd_bundles(self, model_id: Optional[str] = None) -> Dict:
+        """
+        查詢可用的 SBD 方案
+        
+        Args:
+            model_id: 可選的設備型號 ID
+            
+        Returns:
+            Dict: 包含方案列表的結果
+        """
+        print("\n" + "="*60)
+        print("📋 [IWS] Fetching SBD bundles...")
+        print("="*60)
+        if model_id:
+            print(f"Model ID: {model_id}")
+        print("="*60 + "\n")
+        
+        try:
+            action_name, soap_body = self._build_get_sbd_bundles_body(model_id)
+            
+            response_xml = self._send_soap_request(
+                soap_action=action_name,
+                soap_body=soap_body
+            )
+            
+            bundles = self._parse_sbd_bundles(response_xml)
+            
             print("\n" + "="*60)
-            print("❌ [DIAGNOSTIC] Connection test FAILED!")
+            print(f"✅ Found {len(bundles)} SBD bundle(s)")
             print("="*60)
-            print(f"Unexpected Error: {str(e)}")
+            for i, bundle in enumerate(bundles, 1):
+                print(f"\nBundle {i}:")
+                for key, value in bundle.items():
+                    print(f"  {key}: {value}")
             print("="*60 + "\n")
-            raise IWSException(f"Connection test failed: {str(e)}")
+            
+            return {
+                'success': True,
+                'bundles': bundles,
+                'count': len(bundles),
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except IWSException as e:
+            print("\n" + "="*60)
+            print("❌ Failed to fetch SBD bundles")
+            print("="*60)
+            print(f"Error: {str(e)}")
+            print("="*60 + "\n")
+            raise
     
     def activate_subscriber(self,
                           imei: str,
@@ -558,7 +677,12 @@ class IWSGateway:
                           mo_ack_flag: str = 'false',
                           lrit_flagstate: str = '',
                           ring_alerts_flag: str = 'false') -> Dict:
-        """啟用 SBD 設備"""
+        """
+        啟用 SBD 設備
+        
+        Args:
+            plan_id: SBD Bundle ID（支援 "SBD12" 或 "12" 格式，會自動轉換為純數字）
+        """
         self._validate_imei(imei)
         
         valid_methods = [
@@ -591,12 +715,16 @@ class IWSGateway:
             
             transaction_id = self._extract_transaction_id(response_xml)
             
+            # 轉換後的 plan_id
+            plan_id_digits = self._extract_plan_id_digits(plan_id)
+            
             return {
                 'success': True,
                 'transaction_id': transaction_id or 'N/A',
                 'message': 'Subscriber activated successfully',
                 'imei': imei,
                 'plan_id': plan_id,
+                'plan_id_digits': plan_id_digits,
                 'delivery_method': delivery_method,
                 'destination': destination,
                 'timestamp': datetime.now(timezone.utc).isoformat()
@@ -678,6 +806,12 @@ def check_iws_connection() -> Dict:
     """便利函數：測試 IWS 連線"""
     gateway = IWSGateway()
     return gateway.check_connection()
+
+
+def get_sbd_bundles(model_id: Optional[str] = None) -> Dict:
+    """便利函數：查詢 SBD 方案"""
+    gateway = IWSGateway()
+    return gateway.get_sbd_bundles(model_id)
 
 
 def activate_sbd_device(imei: str, 
