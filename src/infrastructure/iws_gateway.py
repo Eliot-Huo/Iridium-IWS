@@ -1,18 +1,21 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.2 Final
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.0 Final
 完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
 
-v5.2 關鍵修正：
-- 正確的時間戳記格式（UTC，YYYY-MM-DDTHH:MM:SSZ）
-- 正確的簽章算法（SHA-256(password + timestamp)）
-- 確保 Body 中的值與計算一致
+v6.0 正確的簽章算法實作：
+- HMAC-SHA1 + Base64 編碼
+- Message: Action名稱 + 時間戳記
+- Key: Secret Key (password)
+- 參考文件：IWS Technical Documentation
 """
 from __future__ import annotations
 import requests
 import urllib3
 import xml.etree.ElementTree as ET
 import re
+import hmac
 import hashlib
+import base64
 from typing import Dict, Optional
 from datetime import datetime, timezone
 from ..config.settings import (
@@ -37,15 +40,21 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v5.2 Final
+    IWS SOAP 1.2 API Gateway v6.0 Final
     完全符合 WSDL 定義與 IWS 簽章規範
     
-    關鍵規範：
-    1. 時間戳記：UTC 時間，格式 YYYY-MM-DDTHH:MM:SSZ（無微秒，有 Z）
-    2. 簽章算法：SHA-256(password + timestamp)
-    3. Body 中的 timestamp 與簽章計算使用的必須完全一致
-    4. 命名空間：http://www.iridium.com/（帶斜線）
-    5. 強制完整標籤閉合：<tag></tag>
+    簽章算法（正確）：
+    - Algorithm: HMAC-SHA1
+    - Message: Action名稱 + 時間戳記（無空格）
+    - Key: Secret Key (password)
+    - Encoding: Base64
+    
+    範例：
+    - Action: getSystemStatus
+    - Timestamp: 2025-12-25T06:00:00Z
+    - Message: "getSystemStatus2025-12-25T06:00:00Z"
+    - Key: "FvGr2({sE4V4TJ:"
+    - Signature: Base64(HMAC-SHA1(key, message))
     """
     
     # SOAP 1.2 Namespaces
@@ -54,7 +63,7 @@ class IWSGateway:
         'tns': 'http://www.iridium.com/'
     }
     
-    # IWS Namespace - 帶斜線
+    # IWS Namespace
     IWS_NS = 'http://www.iridium.com/'
     
     # Delivery Methods
@@ -78,7 +87,16 @@ class IWSGateway:
                  sp_account: Optional[str] = None,
                  endpoint: Optional[str] = None,
                  timeout: int = REQUEST_TIMEOUT):
-        """初始化 IWS Gateway"""
+        """
+        初始化 IWS Gateway
+        
+        Args:
+            username: IWS 使用者名稱 (預設: IWSN3D)
+            password: IWS Secret Key (預設: FvGr2({sE4V4TJ:)
+            sp_account: Service Provider Account Number (預設: 200883)
+            endpoint: IWS 端點 URL
+            timeout: 請求逾時時間（秒）
+        """
         self.username = username or IWS_USER
         self.password = password or IWS_PASS
         self.sp_account = sp_account or IWS_SP_ACCOUNT
@@ -90,6 +108,11 @@ class IWSGateway:
                 "Missing required IWS credentials. "
                 "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
+        
+        print(f"\n[IWS] Gateway initialized")
+        print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64")
+        print(f"[IWS] Username: {self.username}")
+        print(f"[IWS] SP Account: {self.sp_account}")
     
     def _generate_timestamp(self) -> str:
         """
@@ -100,50 +123,61 @@ class IWSGateway:
         - 無微秒
         - 結尾必須有 Z
         
-        範例：2025-12-25T06:06:05Z
-        
         Returns:
             str: UTC 時間戳記
         """
         utc_now = datetime.now(timezone.utc)
-        # 格式化為 ISO 8601 但移除微秒和時區資訊，手動加上 Z
         timestamp = utc_now.strftime('%Y-%m-%dT%H:%M:%SZ')
         return timestamp
     
-    def _generate_signature(self, timestamp: str) -> str:
+    def _generate_signature(self, action_name: str, timestamp: str) -> str:
         """
-        生成簽章（IWS 規範）
+        生成簽章（HMAC-SHA1 + Base64）
         
-        算法：SHA-256(password + timestamp)
-        - 字串：password 直接串接 timestamp（無空格或特殊符號）
-        - 編碼：UTF-8
-        - 輸出：小寫 hex 字串
+        根據 IWS 技術文件：
+        - Message（拼接字串）：Action名稱 + 時間戳記（無空格）
+        - Key（密鑰）：Secret Key (password)
+        - Algorithm：HMAC-SHA1
+        - Encoding：Base64
         
         範例：
-        - password: "mypass123"
-        - timestamp: "2025-12-25T06:06:05Z"
-        - 輸入字串: "mypass1232025-12-25T06:06:05Z"
-        - 輸出: SHA-256 hex digest
+        - Action: "getSystemStatus"
+        - Timestamp: "2025-12-25T06:00:00Z"
+        - Message: "getSystemStatus2025-12-25T06:00:00Z"
+        - Key: "FvGr2({sE4V4TJ:"
+        - Signature: Base64(HMAC-SHA1(key, message))
         
         Args:
-            timestamp: 時間戳記（必須與 Body 中的完全一致）
+            action_name: SOAP Action 名稱（與 WSDL 定義完全一致）
+            timestamp: 時間戳記（與 Body 中的完全一致）
             
         Returns:
-            str: SHA-256 簽章（小寫 hex）
+            str: Base64 編碼的簽章
         """
-        # 關鍵：password + timestamp（無空格）
-        signature_input = f"{self.password}{timestamp}"
+        # 構建 Message（Action + Timestamp，無空格）
+        message = f"{action_name}{timestamp}".encode('utf-8')
         
-        # SHA-256 計算
-        signature = hashlib.sha256(signature_input.encode('utf-8')).hexdigest()
+        # Key（Secret Key）
+        key = self.password.encode('utf-8')
         
-        print(f"[IWS] Signature Debug:")
-        print(f"  Password: {self.password}")
+        # HMAC-SHA1 計算
+        hmac_sha1 = hmac.new(key, message, hashlib.sha1)
+        signature_bytes = hmac_sha1.digest()
+        
+        # Base64 編碼
+        signature_base64 = base64.b64encode(signature_bytes).decode('utf-8')
+        
+        # 診斷日誌
+        print(f"\n[IWS] Signature Generation:")
+        print(f"  Algorithm: HMAC-SHA1 + Base64")
+        print(f"  Action: {action_name}")
         print(f"  Timestamp: {timestamp}")
-        print(f"  Input String: {signature_input}")
-        print(f"  SHA-256 Signature: {signature}")
+        print(f"  Message: {action_name}{timestamp}")
+        print(f"  Key: {self.password[:2]}*** (Secret Key)")
+        print(f"  Signature (Base64): {signature_base64}")
+        print(f"  Signature Length: {len(signature_base64)} chars")
         
-        return signature
+        return signature_base64
     
     def _safe_xml_value(self, value: Optional[str]) -> str:
         """
@@ -183,22 +217,16 @@ class IWSGateway:
     </soap:Body>
 </soap:Envelope>'''
     
-    def _build_get_system_status_body(self) -> str:
+    def _build_get_system_status_body(self) -> tuple[str, str]:
         """
         構建 getSystemStatus 的 SOAP Body
-        用於連線測試
         
-        關鍵：
-        - 使用正確的時間戳記格式
-        - 使用正確的簽章算法
+        Returns:
+            tuple: (action_name, soap_body)
         """
-        # 生成時間戳記（UTC，YYYY-MM-DDTHH:MM:SSZ）
+        action_name = 'getSystemStatus'
         timestamp = self._generate_timestamp()
-        
-        # 生成簽章（SHA-256(password + timestamp)）
-        signature = self._generate_signature(timestamp)
-        
-        # 安全處理空值
+        signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
         
         body = f'''        <tns:getSystemStatus xmlns:tns="{self.IWS_NS}">
@@ -211,7 +239,7 @@ class IWSGateway:
             </request>
         </tns:getSystemStatus>'''
         
-        return body
+        return action_name, body
     
     def _build_activate_subscriber_body(self,
                                        imei: str,
@@ -221,13 +249,12 @@ class IWSGateway:
                                        geo_data_flag: str = 'false',
                                        mo_ack_flag: str = 'false',
                                        lrit_flagstate: str = '',
-                                       ring_alerts_flag: str = 'false') -> str:
+                                       ring_alerts_flag: str = 'false') -> tuple[str, str]:
         """
         構建 activateSubscriber 的 SOAP Body
         
-        關鍵：
-        - 時間戳記與簽章必須一致
-        - 所有空欄位強制完整閉合
+        Returns:
+            tuple: (action_name, soap_body)
         """
         if not destination:
             if delivery_method == self.DELIVERY_METHOD_EMAIL:
@@ -235,13 +262,9 @@ class IWSGateway:
             else:
                 destination = '0.0.0.0'
         
-        # 生成時間戳記（UTC，YYYY-MM-DDTHH:MM:SSZ）
+        action_name = 'activateSubscriber'
         timestamp = self._generate_timestamp()
-        
-        # 生成簽章（SHA-256(password + timestamp)）
-        signature = self._generate_signature(timestamp)
-        
-        # 安全處理空值
+        signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
         lrit_flagstate = self._safe_xml_value(lrit_flagstate)
         
@@ -271,27 +294,23 @@ class IWSGateway:
             </request>
         </tns:activateSubscriber>'''
         
-        return body
+        return action_name, body
     
     def _build_set_subscriber_account_status_body(self,
                                                    imei: str,
                                                    new_status: str,
                                                    reason: str = '系統自動執行',
                                                    service_type: str = SERVICE_TYPE_SHORT_BURST_DATA,
-                                                   update_type: str = UPDATE_TYPE_IMEI) -> str:
+                                                   update_type: str = UPDATE_TYPE_IMEI) -> tuple[str, str]:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
         
-        關鍵：
-        - 時間戳記與簽章必須一致
+        Returns:
+            tuple: (action_name, soap_body)
         """
-        # 生成時間戳記
+        action_name = 'setSubscriberAccountStatus'
         timestamp = self._generate_timestamp()
-        
-        # 生成簽章
-        signature = self._generate_signature(timestamp)
-        
-        # 安全處理空值
+        signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
         
         body = f'''        <tns:setSubscriberAccountStatus xmlns:tns="{self.IWS_NS}">
@@ -309,12 +328,18 @@ class IWSGateway:
             </request>
         </tns:setSubscriberAccountStatus>'''
         
-        return body
+        return action_name, body
     
     def _send_soap_request(self, 
                           soap_action: str,
                           soap_body: str) -> str:
-        """發送 SOAP 1.2 請求"""
+        """
+        發送 SOAP 1.2 請求
+        
+        Args:
+            soap_action: SOAP Action 名稱（與簽章計算使用的完全一致）
+            soap_body: SOAP Body 內容
+        """
         soap_envelope = self._build_soap_envelope(soap_body)
         
         headers = {
@@ -471,23 +496,23 @@ class IWSGateway:
     
     def check_connection(self) -> Dict:
         """
-        測試 IWS 連線（基礎診斷）
+        測試 IWS 連線
         
-        使用 getSystemStatus 進行診斷
+        使用 getSystemStatus 進行基礎連線測試
         """
         print("\n" + "="*60)
         print("🔍 [DIAGNOSTIC] Starting connection test...")
         print("="*60)
         print("Method: getSystemStatus")
-        print("Signature: SHA-256(password + timestamp)")
-        print("Timestamp Format: YYYY-MM-DDTHH:MM:SSZ (UTC)")
+        print("Signature: HMAC-SHA1 + Base64")
+        print("Message: Action + Timestamp")
         print("="*60 + "\n")
         
         try:
-            soap_body = self._build_get_system_status_body()
+            action_name, soap_body = self._build_get_system_status_body()
             
             response_xml = self._send_soap_request(
-                soap_action='getSystemStatus',
+                soap_action=action_name,
                 soap_body=soap_body
             )
             
@@ -495,7 +520,7 @@ class IWSGateway:
             print("✅ [DIAGNOSTIC] Connection test PASSED!")
             print("="*60)
             print("Authentication: ✓")
-            print("Signature: ✓")
+            print("Signature: ✓ (HMAC-SHA1 + Base64)")
             print("Timestamp: ✓")
             print("Protocol: ✓")
             print("="*60 + "\n")
@@ -503,6 +528,7 @@ class IWSGateway:
             return {
                 'success': True,
                 'message': 'IWS connection successful',
+                'signature_algorithm': 'HMAC-SHA1 + Base64',
                 'diagnostic': 'All layers verified',
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
@@ -547,7 +573,7 @@ class IWSGateway:
             )
         
         try:
-            soap_body = self._build_activate_subscriber_body(
+            action_name, soap_body = self._build_activate_subscriber_body(
                 imei=imei,
                 plan_id=plan_id,
                 destination=destination,
@@ -559,7 +585,7 @@ class IWSGateway:
             )
             
             response_xml = self._send_soap_request(
-                soap_action='activateSubscriber',
+                soap_action=action_name,
                 soap_body=soap_body
             )
             
@@ -588,14 +614,14 @@ class IWSGateway:
         self._validate_imei(imei)
         
         try:
-            soap_body = self._build_set_subscriber_account_status_body(
+            action_name, soap_body = self._build_set_subscriber_account_status_body(
                 imei=imei,
                 new_status=self.ACCOUNT_STATUS_SUSPENDED,
                 reason=reason
             )
             
             response_xml = self._send_soap_request(
-                soap_action='setSubscriberAccountStatus',
+                soap_action=action_name,
                 soap_body=soap_body
             )
             
@@ -620,14 +646,14 @@ class IWSGateway:
         self._validate_imei(imei)
         
         try:
-            soap_body = self._build_set_subscriber_account_status_body(
+            action_name, soap_body = self._build_set_subscriber_account_status_body(
                 imei=imei,
                 new_status=self.ACCOUNT_STATUS_ACTIVE,
                 reason=reason
             )
             
             response_xml = self._send_soap_request(
-                soap_action='setSubscriberAccountStatus',
+                soap_action=action_name,
                 soap_body=soap_body
             )
             
