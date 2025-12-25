@@ -1,21 +1,20 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.1 - SITEST Optimized
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.2 Final
 完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
 
-架構師深度優化版本：
-- 修正命名空間歧義（結尾加斜線）
-- 強制完整標籤閉合（<tag></tag> 而非 <tag/>）
-- 實作基礎診斷方法（check_connection）
-- 優化錯誤回應捕捉（記錄 response.headers）
-- 簽章大小寫校正（action 名稱完全一致）
+v5.2 關鍵修正：
+- 正確的時間戳記格式（UTC，YYYY-MM-DDTHH:MM:SSZ）
+- 正確的簽章算法（SHA-256(password + timestamp)）
+- 確保 Body 中的值與計算一致
 """
 from __future__ import annotations
 import requests
 import urllib3
 import xml.etree.ElementTree as ET
 import re
+import hashlib
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from ..config.settings import (
     IWS_USER, 
     IWS_PASS, 
@@ -38,24 +37,24 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v5.1 - SITEST Optimized
-    完全符合 WSDL 定義與架構師深度優化規範
+    IWS SOAP 1.2 API Gateway v5.2 Final
+    完全符合 WSDL 定義與 IWS 簽章規範
     
-    關鍵規範（SITEST 環境）：
-    1. 命名空間必須帶斜線: http://www.iridium.com/
-    2. 空欄位強制完整閉合: <tag></tag> 而非 <tag/>
-    3. 診斷方法: check_connection() 使用 getSystemStatus
-    4. 詳細錯誤日誌: 記錄 response.headers
-    5. action 名稱大小寫: 完全符合 WSDL
+    關鍵規範：
+    1. 時間戳記：UTC 時間，格式 YYYY-MM-DDTHH:MM:SSZ（無微秒，有 Z）
+    2. 簽章算法：SHA-256(password + timestamp)
+    3. Body 中的 timestamp 與簽章計算使用的必須完全一致
+    4. 命名空間：http://www.iridium.com/（帶斜線）
+    5. 強制完整標籤閉合：<tag></tag>
     """
     
     # SOAP 1.2 Namespaces
     NAMESPACES = {
         'soap': 'http://www.w3.org/2003/05/soap-envelope',
-        'tns': 'http://www.iridium.com/'  # 關鍵：結尾必須有斜線
+        'tns': 'http://www.iridium.com/'
     }
     
-    # IWS Namespace - 關鍵：結尾必須有斜線（SITEST 環境要求）
+    # IWS Namespace - 帶斜線
     IWS_NS = 'http://www.iridium.com/'
     
     # Delivery Methods
@@ -79,16 +78,7 @@ class IWSGateway:
                  sp_account: Optional[str] = None,
                  endpoint: Optional[str] = None,
                  timeout: int = REQUEST_TIMEOUT):
-        """
-        初始化 IWS Gateway
-        
-        Args:
-            username: IWS 使用者名稱
-            password: IWS 密碼
-            sp_account: Service Provider Account Number
-            endpoint: IWS 端點 URL
-            timeout: 請求逾時時間（秒）
-        """
+        """初始化 IWS Gateway"""
         self.username = username or IWS_USER
         self.password = password or IWS_PASS
         self.sp_account = sp_account or IWS_SP_ACCOUNT
@@ -101,30 +91,71 @@ class IWSGateway:
                 "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
     
+    def _generate_timestamp(self) -> str:
+        """
+        生成符合 IWS 規範的時間戳記
+        
+        格式：YYYY-MM-DDTHH:MM:SSZ
+        - UTC 時間
+        - 無微秒
+        - 結尾必須有 Z
+        
+        範例：2025-12-25T06:06:05Z
+        
+        Returns:
+            str: UTC 時間戳記
+        """
+        utc_now = datetime.now(timezone.utc)
+        # 格式化為 ISO 8601 但移除微秒和時區資訊，手動加上 Z
+        timestamp = utc_now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        return timestamp
+    
+    def _generate_signature(self, timestamp: str) -> str:
+        """
+        生成簽章（IWS 規範）
+        
+        算法：SHA-256(password + timestamp)
+        - 字串：password 直接串接 timestamp（無空格或特殊符號）
+        - 編碼：UTF-8
+        - 輸出：小寫 hex 字串
+        
+        範例：
+        - password: "mypass123"
+        - timestamp: "2025-12-25T06:06:05Z"
+        - 輸入字串: "mypass1232025-12-25T06:06:05Z"
+        - 輸出: SHA-256 hex digest
+        
+        Args:
+            timestamp: 時間戳記（必須與 Body 中的完全一致）
+            
+        Returns:
+            str: SHA-256 簽章（小寫 hex）
+        """
+        # 關鍵：password + timestamp（無空格）
+        signature_input = f"{self.password}{timestamp}"
+        
+        # SHA-256 計算
+        signature = hashlib.sha256(signature_input.encode('utf-8')).hexdigest()
+        
+        print(f"[IWS] Signature Debug:")
+        print(f"  Password: {self.password}")
+        print(f"  Timestamp: {timestamp}")
+        print(f"  Input String: {signature_input}")
+        print(f"  SHA-256 Signature: {signature}")
+        
+        return signature
+    
     def _safe_xml_value(self, value: Optional[str]) -> str:
         """
         安全的 XML 值處理
-        
-        關鍵：強制完整標籤閉合
-        - 空值/None 返回空字串（不返回 self-closing tag）
-        - 確保所有欄位使用 <tag></tag> 格式
-        
-        Args:
-            value: 原始值
-            
-        Returns:
-            str: 安全的 XML 值（空字串而非 None）
+        強制完整標籤閉合：<tag></tag>
         """
         if value is None or value == '':
-            return ''  # 空字串，將生成 <tag></tag>
+            return ''
         return str(value)
     
     def _validate_imei(self, imei: str) -> bool:
-        """
-        驗證 IMEI 格式
-        - 必須是 15 位數字
-        - 必須以 30 開頭
-        """
+        """驗證 IMEI 格式"""
         if not imei:
             raise IWSException("IMEI cannot be empty")
         
@@ -143,14 +174,7 @@ class IWSGateway:
         return True
     
     def _build_soap_envelope(self, body_content: str) -> str:
-        """
-        構建 SOAP 1.2 Envelope
-        
-        關鍵規範：
-        - SOAP 1.2 命名空間
-        - 空的 Header
-        - Body 內容使用 tns 前綴
-        """
+        """構建 SOAP 1.2 Envelope"""
         return f'''<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="{self.NAMESPACES['soap']}">
     <soap:Header/>
@@ -162,21 +186,25 @@ class IWSGateway:
     def _build_get_system_status_body(self) -> str:
         """
         構建 getSystemStatus 的 SOAP Body
-        用於連線測試 - 最簡單的無參數操作
+        用於連線測試
         
         關鍵：
-        - 僅包含認證欄位
-        - 無業務資料
-        - 用於診斷「認證/標頭/命名空間」問題
+        - 使用正確的時間戳記格式
+        - 使用正確的簽章算法
         """
-        timestamp = datetime.now().isoformat()
+        # 生成時間戳記（UTC，YYYY-MM-DDTHH:MM:SSZ）
+        timestamp = self._generate_timestamp()
+        
+        # 生成簽章（SHA-256(password + timestamp)）
+        signature = self._generate_signature(timestamp)
+        
+        # 安全處理空值
         sp_account = self._safe_xml_value(self.sp_account)
         
-        # 強制完整標籤閉合
         body = f'''        <tns:getSystemStatus xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
-                <signature>{self.password}</signature>
+                <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
@@ -197,11 +225,9 @@ class IWSGateway:
         """
         構建 activateSubscriber 的 SOAP Body
         
-        關鍵規範（SITEST 優化）：
-        1. 命名空間帶斜線
-        2. 強制完整標籤閉合（所有空欄位使用 <tag></tag>）
-        3. 元素順序嚴格符合 WSDL
-        4. 補全所有必要元素
+        關鍵：
+        - 時間戳記與簽章必須一致
+        - 所有空欄位強制完整閉合
         """
         if not destination:
             if delivery_method == self.DELIVERY_METHOD_EMAIL:
@@ -209,19 +235,20 @@ class IWSGateway:
             else:
                 destination = '0.0.0.0'
         
-        # 生成時間戳記
-        timestamp = datetime.now().isoformat()
+        # 生成時間戳記（UTC，YYYY-MM-DDTHH:MM:SSZ）
+        timestamp = self._generate_timestamp()
         
-        # 安全處理所有可能為空的欄位
+        # 生成簽章（SHA-256(password + timestamp)）
+        signature = self._generate_signature(timestamp)
+        
+        # 安全處理空值
         sp_account = self._safe_xml_value(self.sp_account)
         lrit_flagstate = self._safe_xml_value(lrit_flagstate)
         
-        # 構建 SOAP Body
-        # 關鍵：所有空欄位使用 <tag></tag> 格式
         body = f'''        <tns:activateSubscriber xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
-                <signature>{self.password}</signature>
+                <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
@@ -255,18 +282,22 @@ class IWSGateway:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
         
-        關鍵規範：
-        - 命名空間帶斜線
-        - 元素順序符合 WSDL
-        - 強制完整標籤閉合
+        關鍵：
+        - 時間戳記與簽章必須一致
         """
-        timestamp = datetime.now().isoformat()
+        # 生成時間戳記
+        timestamp = self._generate_timestamp()
+        
+        # 生成簽章
+        signature = self._generate_signature(timestamp)
+        
+        # 安全處理空值
         sp_account = self._safe_xml_value(self.sp_account)
         
         body = f'''        <tns:setSubscriberAccountStatus xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
-                <signature>{self.password}</signature>
+                <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
@@ -283,19 +314,9 @@ class IWSGateway:
     def _send_soap_request(self, 
                           soap_action: str,
                           soap_body: str) -> str:
-        """
-        發送 SOAP 1.2 請求
-        
-        關鍵規範（SITEST 優化）：
-        - Content-Type: action 僅含方法名（大小寫完全一致）
-        - 無獨立 SOAPAction header
-        - 無 HTTP Basic Auth
-        - 詳細錯誤日誌（包含 response.headers）
-        """
+        """發送 SOAP 1.2 請求"""
         soap_envelope = self._build_soap_envelope(soap_body)
         
-        # SOAP 1.2 Headers
-        # 關鍵：action 名稱大小寫完全符合 WSDL
         headers = {
             'Content-Type': f'application/soap+xml; charset=utf-8; action="{soap_action}"',
             'Accept': 'application/soap+xml, text/xml'
@@ -317,7 +338,6 @@ class IWSGateway:
             print(soap_envelope[:500])
             print(f"{'='*60}\n")
             
-            # 不使用 HTTP Basic Auth（認證在 SOAP Body 內）
             response = requests.post(
                 self.endpoint,
                 data=soap_envelope,
@@ -332,7 +352,6 @@ class IWSGateway:
             print(f"Status Code: {response.status_code}")
             print(f"Reason: {response.reason}")
             
-            # 關鍵：記錄 response.headers（可能包含錯誤提示）
             print(f"\n[IWS] Response Headers:")
             for key, value in response.headers.items():
                 print(f"  {key}: {value}")
@@ -342,14 +361,12 @@ class IWSGateway:
             print(f"{'='*60}\n")
             
             if response.status_code != 200:
-                # 詳細的錯誤訊息
                 error_details = [
                     f"HTTP {response.status_code}: {response.reason}",
                     f"Endpoint: {self.endpoint}",
                     f"Action: {soap_action}",
                 ]
                 
-                # 檢查特殊的錯誤 headers
                 if 'X-Error-Info' in response.headers:
                     error_details.append(f"X-Error-Info: {response.headers['X-Error-Info']}")
                 if 'X-Error-Code' in response.headers:
@@ -373,24 +390,15 @@ class IWSGateway:
             raise IWSException(f"Request failed: {str(e)}")
     
     def _check_soap_fault(self, xml_response: str):
-        """
-        檢查 SOAP 1.2 Fault
-        
-        SOAP 1.2 Fault 結構:
-        - soap:Code/soap:Value
-        - soap:Reason/soap:Text
-        - soap:Detail
-        """
+        """檢查 SOAP 1.2 Fault"""
         try:
             root = ET.fromstring(xml_response)
             
-            # 尋找 SOAP 1.2 Fault
             fault = root.find('.//soap:Fault', self.NAMESPACES)
             if fault is None:
                 fault = root.find('.//Fault')
             
             if fault is not None:
-                # SOAP 1.2: soap:Code/soap:Value
                 code_elem = fault.find('soap:Code/soap:Value', self.NAMESPACES)
                 if code_elem is None:
                     code_elem = fault.find('.//Code/Value')
@@ -399,7 +407,6 @@ class IWSGateway:
                 
                 faultcode = code_elem.text if code_elem is not None else 'Unknown'
                 
-                # SOAP 1.2: soap:Reason/soap:Text
                 reason_elem = fault.find('soap:Reason/soap:Text', self.NAMESPACES)
                 if reason_elem is None:
                     reason_elem = fault.find('.//Reason/Text')
@@ -408,7 +415,6 @@ class IWSGateway:
                 
                 faultstring = reason_elem.text if reason_elem is not None else 'Unknown error'
                 
-                # Detail
                 detail = fault.find('soap:Detail', self.NAMESPACES)
                 if detail is None:
                     detail = fault.find('.//Detail')
@@ -467,29 +473,19 @@ class IWSGateway:
         """
         測試 IWS 連線（基礎診斷）
         
-        使用最簡單的 getSystemStatus 操作進行診斷：
-        - 如果此方法失敗（HTTP 500）→ 問題在「認證/標頭/命名空間」
-        - 如果此方法成功但啟用失敗 → 問題在「SBD 資料結構」
-        
-        這是診斷 SITEST 環境問題的第一步。
-        
-        Returns:
-            Dict: 連線測試結果
-        
-        Raises:
-            IWSException: 連線失敗
+        使用 getSystemStatus 進行診斷
         """
         print("\n" + "="*60)
         print("🔍 [DIAGNOSTIC] Starting connection test...")
         print("="*60)
-        print("This is the simplest IWS operation (getSystemStatus)")
-        print("Purpose: Verify authentication/headers/namespace")
+        print("Method: getSystemStatus")
+        print("Signature: SHA-256(password + timestamp)")
+        print("Timestamp Format: YYYY-MM-DDTHH:MM:SSZ (UTC)")
         print("="*60 + "\n")
         
         try:
             soap_body = self._build_get_system_status_body()
             
-            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='getSystemStatus',
                 soap_body=soap_body
@@ -498,15 +494,17 @@ class IWSGateway:
             print("\n" + "="*60)
             print("✅ [DIAGNOSTIC] Connection test PASSED!")
             print("="*60)
-            print("Authentication/headers/namespace are correct.")
-            print("If activateSubscriber fails, check SBD data structure.")
+            print("Authentication: ✓")
+            print("Signature: ✓")
+            print("Timestamp: ✓")
+            print("Protocol: ✓")
             print("="*60 + "\n")
             
             return {
                 'success': True,
                 'message': 'IWS connection successful',
-                'diagnostic': 'Authentication and protocol layer verified',
-                'timestamp': datetime.now().isoformat()
+                'diagnostic': 'All layers verified',
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException as e:
@@ -515,9 +513,6 @@ class IWSGateway:
             print("="*60)
             print(f"Error Code: {e.error_code}")
             print(f"Error Message: {str(e)}")
-            print("="*60)
-            print("DIAGNOSIS: Problem in authentication/headers/namespace")
-            print("ACTION: Check IWS_USER, IWS_PASS, IWS_SP_ACCOUNT")
             print("="*60 + "\n")
             raise
         except Exception as e:
@@ -537,22 +532,7 @@ class IWSGateway:
                           mo_ack_flag: str = 'false',
                           lrit_flagstate: str = '',
                           ring_alerts_flag: str = 'false') -> Dict:
-        """
-        啟用 SBD 設備
-        
-        Args:
-            imei: 設備 IMEI（15 位數字，必須以 30 開頭）
-            plan_id: SBD Bundle ID (例如: 'SBD12', 'SBDO', 'SBD17')
-            destination: 傳送目的地（IP 地址或 Email）
-            delivery_method: 傳送方式（EMAIL/DIRECT_IP/IRIDIUM_DEVICE）
-            geo_data_flag: 地理資料標誌（'true'/'false'）
-            mo_ack_flag: MO 確認標誌（'true'/'false'）
-            lrit_flagstate: LRIT Flag State（通常留空）
-            ring_alerts_flag: Ring Alerts Flag（'true'/'false'）
-            
-        Returns:
-            Dict: 啟用結果
-        """
+        """啟用 SBD 設備"""
         self._validate_imei(imei)
         
         valid_methods = [
@@ -578,7 +558,6 @@ class IWSGateway:
                 ring_alerts_flag=ring_alerts_flag
             )
             
-            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='activateSubscriber',
                 soap_body=soap_body
@@ -594,7 +573,7 @@ class IWSGateway:
                 'plan_id': plan_id,
                 'delivery_method': delivery_method,
                 'destination': destination,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException:
@@ -605,16 +584,7 @@ class IWSGateway:
     def suspend_subscriber(self, 
                           imei: str,
                           reason: str = '系統自動暫停') -> Dict:
-        """
-        暫停 SBD 設備
-        
-        Args:
-            imei: 設備 IMEI
-            reason: 暫停原因
-            
-        Returns:
-            Dict: 暫停結果
-        """
+        """暫停 SBD 設備"""
         self._validate_imei(imei)
         
         try:
@@ -624,7 +594,6 @@ class IWSGateway:
                 reason=reason
             )
             
-            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='setSubscriberAccountStatus',
                 soap_body=soap_body
@@ -636,7 +605,7 @@ class IWSGateway:
                 'imei': imei,
                 'new_status': self.ACCOUNT_STATUS_SUSPENDED,
                 'reason': reason,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException:
@@ -647,16 +616,7 @@ class IWSGateway:
     def resume_subscriber(self, 
                          imei: str,
                          reason: str = '系統自動恢復') -> Dict:
-        """
-        恢復 SBD 設備
-        
-        Args:
-            imei: 設備 IMEI
-            reason: 恢復原因
-            
-        Returns:
-            Dict: 恢復結果
-        """
+        """恢復 SBD 設備"""
         self._validate_imei(imei)
         
         try:
@@ -666,7 +626,6 @@ class IWSGateway:
                 reason=reason
             )
             
-            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='setSubscriberAccountStatus',
                 soap_body=soap_body
@@ -678,7 +637,7 @@ class IWSGateway:
                 'imei': imei,
                 'new_status': self.ACCOUNT_STATUS_ACTIVE,
                 'reason': reason,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException:
@@ -690,12 +649,7 @@ class IWSGateway:
 # ==================== 便利函數 ====================
 
 def check_iws_connection() -> Dict:
-    """
-    便利函數：測試 IWS 連線
-    
-    這是診斷 SITEST 環境問題的第一步。
-    如果此方法失敗，問題在認證/標頭/命名空間。
-    """
+    """便利函數：測試 IWS 連線"""
     gateway = IWSGateway()
     return gateway.check_connection()
 
