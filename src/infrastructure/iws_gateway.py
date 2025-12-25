@@ -1,12 +1,13 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.2 Final
-完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.5 Final
+Asset Management Edition - 資產管理專用版
 
-v6.2 修正：
+v6.5 Final 修正：
+- 移除啟動功能（activate_subscriber）- 手動在 SPNet Pro 完成
+- 刪除所有 hardcoded 帳密資訊
+- 布林值改為數字（0/1）以解決 500 錯誤
+- 核心管理功能：暫停、恢復、變更費率、註銷
 - HMAC-SHA1 + Base64 簽章（已驗證成功）
-- plan_id 自動轉換為純數字（已驗證）
-- 新增 demoAndTrialBundle 必填欄位
-- 補全 callerPassword 身份驗證標籤
 """
 from __future__ import annotations
 import requests
@@ -40,8 +41,16 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.2 Final
-    完全符合 WSDL 定義與 IWS 簽章規範
+    IWS SOAP 1.2 API Gateway v6.5 Final
+    Asset Management Edition - 資產管理專用版
+    
+    核心管理功能：
+    - 連線測試（getSystemStatus）
+    - 查詢方案（getSBDBundles）
+    - 變更費率（updateSubscriberSbdPlan）
+    - 註銷設備（deactivateSubscriber）
+    - 暫停設備（setSubscriberAccountStatus - SUSPENDED）
+    - 恢復設備（setSubscriberAccountStatus - ACTIVE）
     
     簽章算法（已驗證成功）：
     - Algorithm: HMAC-SHA1
@@ -49,10 +58,9 @@ class IWSGateway:
     - Key: Secret Key (password)
     - Encoding: Base64
     
-    環境參數（已驗證）：
-    - IWS_USER: IWSN3D
-    - IWS_PASS: FvGr2({sE4V4TJ:
-    - IWS_SP_ACCOUNT: 200883
+    安全性：
+    - 所有憑證從 config.settings 匯入
+    - 不含任何 hardcoded 帳密資訊
     """
     
     # SOAP 1.2 Namespaces
@@ -63,11 +71,6 @@ class IWSGateway:
     
     # IWS Namespace
     IWS_NS = 'http://www.iridium.com/'
-    
-    # Delivery Methods
-    DELIVERY_METHOD_EMAIL = 'EMAIL'
-    DELIVERY_METHOD_DIRECT_IP = 'DIRECT_IP'
-    DELIVERY_METHOD_IRIDIUM_DEVICE = 'IRIDIUM_DEVICE'
     
     # Service Types
     SERVICE_TYPE_SHORT_BURST_DATA = 'SHORT_BURST_DATA'
@@ -89,13 +92,13 @@ class IWSGateway:
         初始化 IWS Gateway
         
         Args:
-            username: IWS 使用者名稱 (預設: IWSN3D)
-            password: IWS Secret Key (預設: FvGr2({sE4V4TJ:)
-            sp_account: Service Provider Account Number (預設: 200883)
+            username: IWS 使用者名稱（從 settings 匯入）
+            password: IWS Secret Key（從 settings 匯入）
+            sp_account: Service Provider Account Number（從 settings 匯入）
             endpoint: IWS 端點 URL
             timeout: 請求逾時時間（秒）
         """
-        self.username = username or IWS_USER
+        self.username = (username or IWS_USER).upper()  # 強制大寫
         self.password = password or IWS_PASS
         self.sp_account = sp_account or IWS_SP_ACCOUNT
         self.endpoint = endpoint or IWS_ENDPOINT
@@ -195,6 +198,20 @@ class IWSGateway:
         
         return digits
     
+    def _bool_to_int(self, value: bool) -> str:
+        """
+        將布林值轉換為數字字串
+        
+        IWS API 要求布林值以數字形式發送
+        
+        Args:
+            value: 布林值
+            
+        Returns:
+            str: "1" (True) 或 "0" (False)
+        """
+        return "1" if value else "0"
+    
     def _safe_xml_value(self, value: Optional[str]) -> str:
         """
         安全的 XML 值處理
@@ -237,6 +254,9 @@ class IWSGateway:
         """
         構建 getSystemStatus 的 SOAP Body
         
+        系統型 API - 無需 caller 和 callerPassword
+        TEST 1 精簡版本
+        
         Returns:
             tuple: (action_name, soap_body)
         """
@@ -251,8 +271,6 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-                <callerPassword>{self.password}</callerPassword>
             </request>
         </tns:getSystemStatus>'''
         
@@ -262,7 +280,7 @@ class IWSGateway:
         """
         構建 getSBDBundles 的 SOAP Body
         
-        查詢可用的 SBD 方案
+        管理型 API - 需要 caller 和 callerPassword
         
         Args:
             model_id: 可選的設備型號 ID
@@ -294,42 +312,36 @@ class IWSGateway:
         
         return action_name, body
     
-    def _build_activate_subscriber_body(self,
-                                       imei: str,
-                                       plan_id: str,
-                                       destination: Optional[str] = None,
-                                       delivery_method: str = DELIVERY_METHOD_DIRECT_IP,
-                                       geo_data_flag: str = 'false',
-                                       mo_ack_flag: str = 'false',
-                                       lrit_flagstate: str = '',
-                                       ring_alerts_flag: str = 'false',
-                                       demo_and_trial: str = 'false') -> tuple[str, str]:
+    def _build_update_subscriber_plan_body(self,
+                                           imei: str,
+                                           new_plan_id: str,
+                                           demo_and_trial: bool = False) -> tuple[str, str]:
         """
-        構建 activateSubscriber 的 SOAP Body
+        構建 updateSubscriberSbdPlan 的 SOAP Body
+        
+        管理型 API - 需要 caller 和 callerPassword
+        變更設備費率方案
         
         Args:
-            plan_id: SBD Bundle ID（會自動轉換為純數字）
-            demo_and_trial: Demo and Trial Bundle（預設 'false'）
+            imei: 設備 IMEI
+            new_plan_id: 新的 SBD Bundle ID（會自動轉換為純數字）
+            demo_and_trial: Demo and Trial（預設 False）
             
         Returns:
             tuple: (action_name, soap_body)
         """
-        if not destination:
-            if delivery_method == self.DELIVERY_METHOD_EMAIL:
-                destination = 'default@example.com'
-            else:
-                destination = '0.0.0.0'
-        
-        action_name = 'activateSubscriber'
+        action_name = 'updateSubscriberSbdPlan'
         timestamp = self._generate_timestamp()
         signature = self._generate_signature(action_name, timestamp)
         sp_account = self._safe_xml_value(self.sp_account)
-        lrit_flagstate = self._safe_xml_value(lrit_flagstate)
         
-        # 關鍵：提取純數字（SBD12 → 12）
-        plan_id_digits = self._extract_plan_id_digits(plan_id)
+        # 提取純數字
+        plan_id_digits = self._extract_plan_id_digits(new_plan_id)
         
-        body = f'''        <tns:activateSubscriber xmlns:tns="{self.IWS_NS}">
+        # 布林值轉換為數字
+        demo_and_trial_value = self._bool_to_int(demo_and_trial)
+        
+        body = f'''        <tns:updateSubscriberSbdPlan xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
                 <signature>{signature}</signature>
@@ -337,25 +349,53 @@ class IWSGateway:
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
                 <callerPassword>{self.password}</callerPassword>
-                <sbdSubscriberAccount>
-                    <plan>
-                        <sbdBundleId>{plan_id_digits}</sbdBundleId>
-                        <demoAndTrialBundle>{demo_and_trial}</demoAndTrialBundle>
-                        <lritFlagstate>{lrit_flagstate}</lritFlagstate>
-                        <ringAlertsFlag>{ring_alerts_flag}</ringAlertsFlag>
-                    </plan>
-                    <imei>{imei}</imei>
-                    <deliveryDetails>
-                        <deliveryDetail>
-                            <destination>{destination}</destination>
-                            <deliveryMethod>{delivery_method}</deliveryMethod>
-                            <geoDataFlag>{geo_data_flag}</geoDataFlag>
-                            <moAckFlag>{mo_ack_flag}</moAckFlag>
-                        </deliveryDetail>
-                    </deliveryDetails>
-                </sbdSubscriberAccount>
+                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
+                <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
+                <value>{imei}</value>
+                <plan>
+                    <sbdBundleId>{plan_id_digits}</sbdBundleId>
+                    <demoAndTrial>{demo_and_trial_value}</demoAndTrial>
+                </plan>
             </request>
-        </tns:activateSubscriber>'''
+        </tns:updateSubscriberSbdPlan>'''
+        
+        return action_name, body
+    
+    def _build_deactivate_subscriber_body(self,
+                                          imei: str,
+                                          reason: str = '系統自動註銷') -> tuple[str, str]:
+        """
+        構建 deactivateSubscriber 的 SOAP Body
+        
+        管理型 API - 需要 caller 和 callerPassword
+        註銷設備
+        
+        Args:
+            imei: 設備 IMEI
+            reason: 註銷原因
+            
+        Returns:
+            tuple: (action_name, soap_body)
+        """
+        action_name = 'deactivateSubscriber'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        sp_account = self._safe_xml_value(self.sp_account)
+        
+        body = f'''        <tns:deactivateSubscriber xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+                <callerPassword>{self.password}</callerPassword>
+                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
+                <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
+                <value>{imei}</value>
+                <reason>{reason}</reason>
+            </request>
+        </tns:deactivateSubscriber>'''
         
         return action_name, body
     
@@ -367,6 +407,9 @@ class IWSGateway:
                                                    update_type: str = UPDATE_TYPE_IMEI) -> tuple[str, str]:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
+        
+        管理型 API - 需要 caller 和 callerPassword
+        暫停或恢復設備
         
         Returns:
             tuple: (action_name, soap_body)
@@ -536,7 +579,7 @@ class IWSGateway:
                 './/transactionId',
                 './/TransactionId',
                 './/{http://www.iridium.com/}transactionId',
-                './/activateSubscriberResponse/transactionId',
+                './/updateSubscriberSbdPlanResponse/transactionId',
                 './/response/transactionId'
             ]
             
@@ -585,11 +628,11 @@ class IWSGateway:
     # ==================== 公開 API 方法 ====================
     
     def check_connection(self) -> Dict:
-        """測試 IWS 連線"""
+        """測試 IWS 連線（系統型 API）"""
         print("\n" + "="*60)
         print("🔍 [DIAGNOSTIC] Starting connection test...")
         print("="*60)
-        print("Method: getSystemStatus")
+        print("Method: getSystemStatus (系統型 API)")
         print("Signature: HMAC-SHA1 + Base64 ✓")
         print("="*60 + "\n")
         
@@ -627,7 +670,7 @@ class IWSGateway:
     
     def get_sbd_bundles(self, model_id: Optional[str] = None) -> Dict:
         """
-        查詢可用的 SBD 方案
+        查詢可用的 SBD 方案（管理型 API）
         
         Args:
             model_id: 可選的設備型號 ID
@@ -676,53 +719,35 @@ class IWSGateway:
             print("="*60 + "\n")
             raise
     
-    def activate_subscriber(self,
-                          imei: str,
-                          plan_id: str,
-                          destination: Optional[str] = None,
-                          delivery_method: str = DELIVERY_METHOD_DIRECT_IP,
-                          geo_data_flag: str = 'false',
-                          mo_ack_flag: str = 'false',
-                          lrit_flagstate: str = '',
-                          ring_alerts_flag: str = 'false',
-                          demo_and_trial: str = 'false') -> Dict:
+    def update_subscriber_plan(self,
+                              imei: str,
+                              new_plan_id: str,
+                              demo_and_trial: bool = False) -> Dict:
         """
-        啟用 SBD 設備
+        變更設備費率方案（管理型 API）
         
         Args:
             imei: 設備 IMEI
-            plan_id: SBD Bundle ID（支援 "SBD12" 或 "12" 格式，會自動轉換為純數字）
-            destination: 接收目的地
-            delivery_method: 傳遞方式
-            geo_data_flag: 地理資料標記
-            mo_ack_flag: MO 確認標記
-            lrit_flagstate: LRIT 標記狀態
-            ring_alerts_flag: 響鈴提醒標記
-            demo_and_trial: Demo and Trial Bundle（預設 'false'）
+            new_plan_id: 新的 SBD Bundle ID（支援 "SBD12" 或 "12" 格式）
+            demo_and_trial: Demo and Trial（預設 False）
+            
+        Returns:
+            Dict: 操作結果
         """
         self._validate_imei(imei)
         
-        valid_methods = [
-            self.DELIVERY_METHOD_EMAIL,
-            self.DELIVERY_METHOD_DIRECT_IP,
-            self.DELIVERY_METHOD_IRIDIUM_DEVICE
-        ]
-        if delivery_method not in valid_methods:
-            raise IWSException(
-                f"Invalid delivery_method: {delivery_method}. "
-                f"Must be one of: {', '.join(valid_methods)}"
-            )
+        print("\n" + "="*60)
+        print("💱 [IWS] Updating subscriber plan...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print(f"New Plan: {new_plan_id}")
+        print(f"Demo and Trial: {demo_and_trial} → {self._bool_to_int(demo_and_trial)}")
+        print("="*60 + "\n")
         
         try:
-            action_name, soap_body = self._build_activate_subscriber_body(
+            action_name, soap_body = self._build_update_subscriber_plan_body(
                 imei=imei,
-                plan_id=plan_id,
-                destination=destination,
-                delivery_method=delivery_method,
-                geo_data_flag=geo_data_flag,
-                mo_ack_flag=mo_ack_flag,
-                lrit_flagstate=lrit_flagstate,
-                ring_alerts_flag=ring_alerts_flag,
+                new_plan_id=new_plan_id,
                 demo_and_trial=demo_and_trial
             )
             
@@ -732,33 +757,89 @@ class IWSGateway:
             )
             
             transaction_id = self._extract_transaction_id(response_xml)
+            plan_id_digits = self._extract_plan_id_digits(new_plan_id)
             
-            # 轉換後的 plan_id
-            plan_id_digits = self._extract_plan_id_digits(plan_id)
+            print("\n" + "="*60)
+            print("✅ Plan updated successfully")
+            print("="*60 + "\n")
             
             return {
                 'success': True,
                 'transaction_id': transaction_id or 'N/A',
-                'message': 'Subscriber activated successfully',
+                'message': 'Subscriber plan updated successfully',
                 'imei': imei,
-                'plan_id': plan_id,
+                'new_plan_id': new_plan_id,
                 'plan_id_digits': plan_id_digits,
-                'delivery_method': delivery_method,
-                'destination': destination,
-                'demo_and_trial': demo_and_trial,
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException:
             raise
         except Exception as e:
-            raise IWSException(f"Unexpected error during activation: {str(e)}")
+            raise IWSException(f"Unexpected error during plan update: {str(e)}")
+    
+    def deactivate_subscriber(self,
+                             imei: str,
+                             reason: str = '系統自動註銷') -> Dict:
+        """
+        註銷設備（管理型 API）
+        
+        Args:
+            imei: 設備 IMEI
+            reason: 註銷原因
+            
+        Returns:
+            Dict: 操作結果
+        """
+        self._validate_imei(imei)
+        
+        print("\n" + "="*60)
+        print("🔴 [IWS] Deactivating subscriber...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print(f"Reason: {reason}")
+        print("="*60 + "\n")
+        
+        try:
+            action_name, soap_body = self._build_deactivate_subscriber_body(
+                imei=imei,
+                reason=reason
+            )
+            
+            response_xml = self._send_soap_request(
+                soap_action=action_name,
+                soap_body=soap_body
+            )
+            
+            print("\n" + "="*60)
+            print("✅ Subscriber deactivated successfully")
+            print("="*60 + "\n")
+            
+            return {
+                'success': True,
+                'message': 'Subscriber deactivated successfully',
+                'imei': imei,
+                'reason': reason,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except IWSException:
+            raise
+        except Exception as e:
+            raise IWSException(f"Unexpected error during deactivation: {str(e)}")
     
     def suspend_subscriber(self, 
                           imei: str,
                           reason: str = '系統自動暫停') -> Dict:
-        """暫停 SBD 設備"""
+        """暫停 SBD 設備（管理型 API）"""
         self._validate_imei(imei)
+        
+        print("\n" + "="*60)
+        print("⏸️  [IWS] Suspending subscriber...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print(f"Reason: {reason}")
+        print("="*60 + "\n")
         
         try:
             action_name, soap_body = self._build_set_subscriber_account_status_body(
@@ -771,6 +852,10 @@ class IWSGateway:
                 soap_action=action_name,
                 soap_body=soap_body
             )
+            
+            print("\n" + "="*60)
+            print("✅ Subscriber suspended successfully")
+            print("="*60 + "\n")
             
             return {
                 'success': True,
@@ -789,8 +874,15 @@ class IWSGateway:
     def resume_subscriber(self, 
                          imei: str,
                          reason: str = '系統自動恢復') -> Dict:
-        """恢復 SBD 設備"""
+        """恢復 SBD 設備（管理型 API）"""
         self._validate_imei(imei)
+        
+        print("\n" + "="*60)
+        print("▶️  [IWS] Resuming subscriber...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print(f"Reason: {reason}")
+        print("="*60 + "\n")
         
         try:
             action_name, soap_body = self._build_set_subscriber_account_status_body(
@@ -803,6 +895,10 @@ class IWSGateway:
                 soap_action=action_name,
                 soap_body=soap_body
             )
+            
+            print("\n" + "="*60)
+            print("✅ Subscriber resumed successfully")
+            print("="*60 + "\n")
             
             return {
                 'success': True,
@@ -833,20 +929,16 @@ def get_sbd_bundles(model_id: Optional[str] = None) -> Dict:
     return gateway.get_sbd_bundles(model_id)
 
 
-def activate_sbd_device(imei: str, 
-                       plan_id: str,
-                       destination: Optional[str] = None,
-                       delivery_method: str = IWSGateway.DELIVERY_METHOD_DIRECT_IP,
-                       demo_and_trial: str = 'false') -> Dict:
-    """便利函數：啟用 SBD 設備"""
+def update_subscriber_plan(imei: str, new_plan_id: str, demo_and_trial: bool = False) -> Dict:
+    """便利函數：變更設備費率"""
     gateway = IWSGateway()
-    return gateway.activate_subscriber(
-        imei=imei,
-        plan_id=plan_id,
-        destination=destination,
-        delivery_method=delivery_method,
-        demo_and_trial=demo_and_trial
-    )
+    return gateway.update_subscriber_plan(imei, new_plan_id, demo_and_trial)
+
+
+def deactivate_subscriber(imei: str, reason: str = '系統自動註銷') -> Dict:
+    """便利函數：註銷設備"""
+    gateway = IWSGateway()
+    return gateway.deactivate_subscriber(imei, reason)
 
 
 def suspend_sbd_device(imei: str, reason: str = '系統自動暫停') -> Dict:
