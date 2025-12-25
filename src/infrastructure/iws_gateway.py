@@ -1,12 +1,13 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.0 Final
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.1 - SITEST Optimized
 完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
 
-架構師最終審查完成：
-- SOAP 1.2 標頭優化（action 僅含方法名）
-- 精確符合 Schema 的 XML 結構（tns 前綴，unqualified 子元素）
-- 嚴格執行元素順序（包含 serviceProviderAccountNumber）
-- 補全所有 SBD 帳戶與目的地元素
+架構師深度優化版本：
+- 修正命名空間歧義（結尾加斜線）
+- 強制完整標籤閉合（<tag></tag> 而非 <tag/>）
+- 實作基礎診斷方法（check_connection）
+- 優化錯誤回應捕捉（記錄 response.headers）
+- 簽章大小寫校正（action 名稱完全一致）
 """
 from __future__ import annotations
 import requests
@@ -18,7 +19,7 @@ from datetime import datetime
 from ..config.settings import (
     IWS_USER, 
     IWS_PASS, 
-    IWS_SP_ACCOUNT,  # Service Provider Account Number
+    IWS_SP_ACCOUNT,
     IWS_ENDPOINT, 
     REQUEST_TIMEOUT
 )
@@ -37,25 +38,25 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v5.0 Final
-    完全符合 WSDL 定義與架構師審查規範
+    IWS SOAP 1.2 API Gateway v5.1 - SITEST Optimized
+    完全符合 WSDL 定義與架構師深度優化規範
     
-    關鍵規範：
-    1. SOAP 1.2 Content-Type: application/soap+xml; charset=utf-8; action="methodName"
-    2. 操作名稱使用 tns 前綴: <tns:activateSubscriber>
-    3. 子元素使用 unqualified（無前綴）: <request>, <iwsUsername>, etc.
-    4. 元素順序: iwsUsername → signature → serviceProviderAccountNumber → timestamp → caller
-    5. 補全所有必要元素: lritFlagstate, ringAlertsFlag, geoDataFlag, moAckFlag
+    關鍵規範（SITEST 環境）：
+    1. 命名空間必須帶斜線: http://www.iridium.com/
+    2. 空欄位強制完整閉合: <tag></tag> 而非 <tag/>
+    3. 診斷方法: check_connection() 使用 getSystemStatus
+    4. 詳細錯誤日誌: 記錄 response.headers
+    5. action 名稱大小寫: 完全符合 WSDL
     """
     
     # SOAP 1.2 Namespaces
     NAMESPACES = {
         'soap': 'http://www.w3.org/2003/05/soap-envelope',
-        'tns': 'http://www.iridium.com'
+        'tns': 'http://www.iridium.com/'  # 關鍵：結尾必須有斜線
     }
     
-    # IWS Namespace
-    IWS_NS = 'http://www.iridium.com'
+    # IWS Namespace - 關鍵：結尾必須有斜線（SITEST 環境要求）
+    IWS_NS = 'http://www.iridium.com/'
     
     # Delivery Methods
     DELIVERY_METHOD_EMAIL = 'EMAIL'
@@ -94,11 +95,29 @@ class IWSGateway:
         self.endpoint = endpoint or IWS_ENDPOINT
         self.timeout = timeout
         
-        if not all([self.username, self.password, self.sp_account, self.endpoint]):
+        if not all([self.username, self.password, self.endpoint]):
             raise IWSException(
                 "Missing required IWS credentials. "
-                "Please configure IWS_USER, IWS_PASS, IWS_SP_ACCOUNT, and IWS_ENDPOINT."
+                "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
+    
+    def _safe_xml_value(self, value: Optional[str]) -> str:
+        """
+        安全的 XML 值處理
+        
+        關鍵：強制完整標籤閉合
+        - 空值/None 返回空字串（不返回 self-closing tag）
+        - 確保所有欄位使用 <tag></tag> 格式
+        
+        Args:
+            value: 原始值
+            
+        Returns:
+            str: 安全的 XML 值（空字串而非 None）
+        """
+        if value is None or value == '':
+            return ''  # 空字串，將生成 <tag></tag>
+        return str(value)
     
     def _validate_imei(self, imei: str) -> bool:
         """
@@ -140,6 +159,32 @@ class IWSGateway:
     </soap:Body>
 </soap:Envelope>'''
     
+    def _build_get_system_status_body(self) -> str:
+        """
+        構建 getSystemStatus 的 SOAP Body
+        用於連線測試 - 最簡單的無參數操作
+        
+        關鍵：
+        - 僅包含認證欄位
+        - 無業務資料
+        - 用於診斷「認證/標頭/命名空間」問題
+        """
+        timestamp = datetime.now().isoformat()
+        sp_account = self._safe_xml_value(self.sp_account)
+        
+        # 強制完整標籤閉合
+        body = f'''        <tns:getSystemStatus xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{self.password}</signature>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+            </request>
+        </tns:getSystemStatus>'''
+        
+        return body
+    
     def _build_activate_subscriber_body(self,
                                        imei: str,
                                        plan_id: str,
@@ -152,10 +197,10 @@ class IWSGateway:
         """
         構建 activateSubscriber 的 SOAP Body
         
-        關鍵規範：
-        1. 操作名稱使用 tns 前綴並宣告 xmlns:tns
-        2. 所有子元素使用 unqualified（無前綴，無 xmlns）
-        3. 元素順序：iwsUsername → signature → serviceProviderAccountNumber → timestamp → caller → 業務資料
+        關鍵規範（SITEST 優化）：
+        1. 命名空間帶斜線
+        2. 強制完整標籤閉合（所有空欄位使用 <tag></tag>）
+        3. 元素順序嚴格符合 WSDL
         4. 補全所有必要元素
         """
         if not destination:
@@ -164,16 +209,20 @@ class IWSGateway:
             else:
                 destination = '0.0.0.0'
         
-        # 生成時間戳記（ISO 8601 格式）
+        # 生成時間戳記
         timestamp = datetime.now().isoformat()
         
+        # 安全處理所有可能為空的欄位
+        sp_account = self._safe_xml_value(self.sp_account)
+        lrit_flagstate = self._safe_xml_value(lrit_flagstate)
+        
         # 構建 SOAP Body
-        # 關鍵：tns 前綴在操作名稱，xmlns:tns 宣告，子元素無前綴
+        # 關鍵：所有空欄位使用 <tag></tag> 格式
         body = f'''        <tns:activateSubscriber xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
                 <signature>{self.password}</signature>
-                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
                 <sbdSubscriberAccount>
@@ -207,19 +256,18 @@ class IWSGateway:
         構建 setSubscriberAccountStatus 的 SOAP Body
         
         關鍵規範：
-        1. 操作名稱使用 tns 前綴
-        2. 子元素使用 unqualified（無前綴）
-        3. 元素順序：認證欄位 → 業務資料
+        - 命名空間帶斜線
+        - 元素順序符合 WSDL
+        - 強制完整標籤閉合
         """
-        # 生成時間戳記
         timestamp = datetime.now().isoformat()
+        sp_account = self._safe_xml_value(self.sp_account)
         
-        # 構建 SOAP Body
         body = f'''        <tns:setSubscriberAccountStatus xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
                 <signature>{self.password}</signature>
-                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
                 <caller>{self.username}</caller>
                 <serviceType>{service_type}</serviceType>
@@ -232,49 +280,43 @@ class IWSGateway:
         
         return body
     
-    def _build_get_system_status_body(self) -> str:
-        """
-        構建 getSystemStatus 的 SOAP Body
-        用於連線測試
-        
-        這是最簡單的 IWS 操作，無需參數
-        """
-        timestamp = datetime.now().isoformat()
-        
-        body = f'''        <tns:getSystemStatus xmlns:tns="{self.IWS_NS}">
-            <request>
-                <iwsUsername>{self.username}</iwsUsername>
-                <signature>{self.password}</signature>
-                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
-                <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-            </request>
-        </tns:getSystemStatus>'''
-        
-        return body
-    
     def _send_soap_request(self, 
                           soap_action: str,
                           soap_body: str) -> str:
         """
         發送 SOAP 1.2 請求
         
-        關鍵規範（架構師審查）：
-        - Content-Type: application/soap+xml; charset=utf-8; action="methodName"
-        - action 僅含方法名（不含 URL）
-        - 不使用獨立的 SOAPAction header
-        - 不使用 HTTP Basic Auth
+        關鍵規範（SITEST 優化）：
+        - Content-Type: action 僅含方法名（大小寫完全一致）
+        - 無獨立 SOAPAction header
+        - 無 HTTP Basic Auth
+        - 詳細錯誤日誌（包含 response.headers）
         """
         soap_envelope = self._build_soap_envelope(soap_body)
         
         # SOAP 1.2 Headers
-        # 關鍵：action 只有方法名，無 URL
+        # 關鍵：action 名稱大小寫完全符合 WSDL
         headers = {
             'Content-Type': f'application/soap+xml; charset=utf-8; action="{soap_action}"',
             'Accept': 'application/soap+xml, text/xml'
         }
         
         try:
+            print(f"\n{'='*60}")
+            print(f"[IWS] SOAP Request Details:")
+            print(f"{'='*60}")
+            print(f"Endpoint: {self.endpoint}")
+            print(f"Action: {soap_action}")
+            print(f"Namespace: {self.IWS_NS}")
+            print(f"Username: {self.username}")
+            print(f"SP Account: {self.sp_account}")
+            print(f"\n[IWS] Request Headers:")
+            for key, value in headers.items():
+                print(f"  {key}: {value}")
+            print(f"\n[IWS] SOAP Envelope (first 500 chars):")
+            print(soap_envelope[:500])
+            print(f"{'='*60}\n")
+            
             # 不使用 HTTP Basic Auth（認證在 SOAP Body 內）
             response = requests.post(
                 self.endpoint,
@@ -284,13 +326,37 @@ class IWSGateway:
                 verify=False
             )
             
-            print(f"[IWS] Request to {self.endpoint}")
-            print(f"[IWS] SOAP Action: {soap_action}")
-            print(f"[IWS] Response Status: {response.status_code}")
+            print(f"\n{'='*60}")
+            print(f"[IWS] SOAP Response Details:")
+            print(f"{'='*60}")
+            print(f"Status Code: {response.status_code}")
+            print(f"Reason: {response.reason}")
+            
+            # 關鍵：記錄 response.headers（可能包含錯誤提示）
+            print(f"\n[IWS] Response Headers:")
+            for key, value in response.headers.items():
+                print(f"  {key}: {value}")
+            
+            print(f"\n[IWS] Response Body (first 1000 chars):")
+            print(response.text[:1000])
+            print(f"{'='*60}\n")
             
             if response.status_code != 200:
-                raise IWSException(
+                # 詳細的錯誤訊息
+                error_details = [
                     f"HTTP {response.status_code}: {response.reason}",
+                    f"Endpoint: {self.endpoint}",
+                    f"Action: {soap_action}",
+                ]
+                
+                # 檢查特殊的錯誤 headers
+                if 'X-Error-Info' in response.headers:
+                    error_details.append(f"X-Error-Info: {response.headers['X-Error-Info']}")
+                if 'X-Error-Code' in response.headers:
+                    error_details.append(f"X-Error-Code: {response.headers['X-Error-Code']}")
+                
+                raise IWSException(
+                    "\n".join(error_details),
                     error_code=str(response.status_code),
                     response_text=response.text
                 )
@@ -329,7 +395,7 @@ class IWSGateway:
                 if code_elem is None:
                     code_elem = fault.find('.//Code/Value')
                 if code_elem is None:
-                    code_elem = fault.find('.//faultcode')  # 向後相容
+                    code_elem = fault.find('.//faultcode')
                 
                 faultcode = code_elem.text if code_elem is not None else 'Unknown'
                 
@@ -338,7 +404,7 @@ class IWSGateway:
                 if reason_elem is None:
                     reason_elem = fault.find('.//Reason/Text')
                 if reason_elem is None:
-                    reason_elem = fault.find('.//faultstring')  # 向後相容
+                    reason_elem = fault.find('.//faultstring')
                 
                 faultstring = reason_elem.text if reason_elem is not None else 'Unknown error'
                 
@@ -347,7 +413,7 @@ class IWSGateway:
                 if detail is None:
                     detail = fault.find('.//Detail')
                 if detail is None:
-                    detail = fault.find('.//detail')  # 向後相容
+                    detail = fault.find('.//detail')
                 
                 detail_text = ''
                 if detail is not None:
@@ -380,7 +446,7 @@ class IWSGateway:
             paths = [
                 './/transactionId',
                 './/TransactionId',
-                './/{http://www.iridium.com}transactionId',
+                './/{http://www.iridium.com/}transactionId',
                 './/activateSubscriberResponse/transactionId',
                 './/response/transactionId'
             ]
@@ -399,9 +465,13 @@ class IWSGateway:
     
     def check_connection(self) -> Dict:
         """
-        測試 IWS 連線
+        測試 IWS 連線（基礎診斷）
         
-        使用 getSystemStatus 方法進行最簡單的通訊測試
+        使用最簡單的 getSystemStatus 操作進行診斷：
+        - 如果此方法失敗（HTTP 500）→ 問題在「認證/標頭/命名空間」
+        - 如果此方法成功但啟用失敗 → 問題在「SBD 資料結構」
+        
+        這是診斷 SITEST 環境問題的第一步。
         
         Returns:
             Dict: 連線測試結果
@@ -409,23 +479,53 @@ class IWSGateway:
         Raises:
             IWSException: 連線失敗
         """
+        print("\n" + "="*60)
+        print("🔍 [DIAGNOSTIC] Starting connection test...")
+        print("="*60)
+        print("This is the simplest IWS operation (getSystemStatus)")
+        print("Purpose: Verify authentication/headers/namespace")
+        print("="*60 + "\n")
+        
         try:
             soap_body = self._build_get_system_status_body()
             
+            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='getSystemStatus',
                 soap_body=soap_body
             )
             
+            print("\n" + "="*60)
+            print("✅ [DIAGNOSTIC] Connection test PASSED!")
+            print("="*60)
+            print("Authentication/headers/namespace are correct.")
+            print("If activateSubscriber fails, check SBD data structure.")
+            print("="*60 + "\n")
+            
             return {
                 'success': True,
                 'message': 'IWS connection successful',
+                'diagnostic': 'Authentication and protocol layer verified',
                 'timestamp': datetime.now().isoformat()
             }
             
-        except IWSException:
+        except IWSException as e:
+            print("\n" + "="*60)
+            print("❌ [DIAGNOSTIC] Connection test FAILED!")
+            print("="*60)
+            print(f"Error Code: {e.error_code}")
+            print(f"Error Message: {str(e)}")
+            print("="*60)
+            print("DIAGNOSIS: Problem in authentication/headers/namespace")
+            print("ACTION: Check IWS_USER, IWS_PASS, IWS_SP_ACCOUNT")
+            print("="*60 + "\n")
             raise
         except Exception as e:
+            print("\n" + "="*60)
+            print("❌ [DIAGNOSTIC] Connection test FAILED!")
+            print("="*60)
+            print(f"Unexpected Error: {str(e)}")
+            print("="*60 + "\n")
             raise IWSException(f"Connection test failed: {str(e)}")
     
     def activate_subscriber(self,
@@ -478,6 +578,7 @@ class IWSGateway:
                 ring_alerts_flag=ring_alerts_flag
             )
             
+            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='activateSubscriber',
                 soap_body=soap_body
@@ -523,6 +624,7 @@ class IWSGateway:
                 reason=reason
             )
             
+            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='setSubscriberAccountStatus',
                 soap_body=soap_body
@@ -564,6 +666,7 @@ class IWSGateway:
                 reason=reason
             )
             
+            # 關鍵：action 名稱大小寫完全符合 WSDL
             response_xml = self._send_soap_request(
                 soap_action='setSubscriberAccountStatus',
                 soap_body=soap_body
@@ -587,7 +690,12 @@ class IWSGateway:
 # ==================== 便利函數 ====================
 
 def check_iws_connection() -> Dict:
-    """便利函數：測試 IWS 連線"""
+    """
+    便利函數：測試 IWS 連線
+    
+    這是診斷 SITEST 環境問題的第一步。
+    如果此方法失敗，問題在認證/標頭/命名空間。
+    """
     gateway = IWSGateway()
     return gateway.check_connection()
 
