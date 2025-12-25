@@ -672,6 +672,70 @@ class IWSGateway:
     
     # ==================== 公開 API 方法 ====================
     
+    def search_account(self, imei: str) -> Dict:
+        """
+        用 IMEI 搜尋訂閱者帳號
+        
+        使用 accountSearch 方法（根據 WSDL p.62）
+        
+        Args:
+            imei: 設備 IMEI
+            
+        Returns:
+            Dict: 搜尋結果，包含 subscriberAccountNumber
+        """
+        self._validate_imei(imei)
+        
+        print("\n" + "="*60)
+        print("🔍 [IWS] Searching account...")
+        print("="*60)
+        print(f"IMEI: {imei}")
+        print("="*60 + "\n")
+        
+        try:
+            action_name, soap_body = self._build_account_search_body(imei)
+            
+            response_xml = self._send_soap_request(
+                soap_action=action_name,
+                soap_body=soap_body
+            )
+            
+            subscriber_account_number = self._parse_account_search(response_xml)
+            
+            if subscriber_account_number:
+                print("\n" + "="*60)
+                print(f"✅ Account found: {subscriber_account_number}")
+                print("="*60 + "\n")
+                
+                return {
+                    'success': True,
+                    'found': True,
+                    'subscriber_account_number': subscriber_account_number,
+                    'imei': imei,
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
+            else:
+                print("\n" + "="*60)
+                print("❌ Account not found")
+                print("="*60 + "\n")
+                
+                return {
+                    'success': True,
+                    'found': False,
+                    'subscriber_account_number': None,
+                    'imei': imei,
+                    'message': 'Account not found - device may not be activated',
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
+            
+        except IWSException as e:
+            print("\n" + "="*60)
+            print("❌ Search failed")
+            print("="*60)
+            print(f"Error: {str(e)}")
+            print("="*60 + "\n")
+            raise
+    
     def check_connection(self) -> Dict:
         """測試 IWS 連線"""
         print("\n" + "="*60)
@@ -825,7 +889,11 @@ class IWSGateway:
             subscriber_account_number = self._parse_account_search(search_response)
             
             if not subscriber_account_number:
-                raise IWSException(f"Account not found for IMEI: {imei}")
+                raise IWSException(
+                    f"Account not found for IMEI: {imei}. "
+                    f"The device may not be activated in the IWS system. "
+                    f"Please verify the IMEI or activate the device first."
+                )
             
             print(f"[IWS] Found account: {subscriber_account_number}")
             
@@ -1031,6 +1099,12 @@ class IWSGateway:
 
 
 # ==================== 便利函數 ====================
+
+def search_account(imei: str) -> Dict:
+    """便利函數：搜尋帳號"""
+    gateway = IWSGateway()
+    return gateway.search_account(imei)
+
 
 def check_iws_connection() -> Dict:
     """便利函數：測試 IWS 連線"""
