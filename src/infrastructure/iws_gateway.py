@@ -1,12 +1,11 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.5 Final
-Asset Management Edition - 資產管理專用版
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.6 Final
+完全符合 SITEST 環境要求
 
-v6.5 Final 修正：
-- 移除啟動功能（activate_subscriber）- 手動在 SPNet Pro 完成
-- 刪除所有 hardcoded 帳密資訊
-- 布林值改為數字（0/1）以解決 500 錯誤
-- 核心管理功能：暫停、恢復、變更費率、註銷
+v6.6 Final 修正：
+- 徹底移除所有 <caller> 與 <callerPassword> 標籤
+- 統一認證結構：僅使用 iwsUsername + signature + timestamp
+- 布林值轉換為數字（0/1）
 - HMAC-SHA1 + Base64 簽章（已驗證成功）
 """
 from __future__ import annotations
@@ -41,8 +40,8 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.5 Final
-    Asset Management Edition - 資產管理專用版
+    IWS SOAP 1.2 API Gateway v6.6 Final
+    SITEST Environment Optimized - 針對 SITEST 環境優化
     
     核心管理功能：
     - 連線測試（getSystemStatus）
@@ -51,6 +50,10 @@ class IWSGateway:
     - 註銷設備（deactivateSubscriber）
     - 暫停設備（setSubscriberAccountStatus - SUSPENDED）
     - 恢復設備（setSubscriberAccountStatus - ACTIVE）
+    
+    認證方式（v6.6 統一）：
+    - 所有請求統一使用：iwsUsername + signature + timestamp
+    - 不使用 caller 和 callerPassword（SITEST 不支援）
     
     簽章算法（已驗證成功）：
     - Algorithm: HMAC-SHA1
@@ -110,8 +113,9 @@ class IWSGateway:
                 "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
         
-        print(f"\n[IWS] Gateway initialized")
+        print(f"\n[IWS] Gateway initialized (v6.6 Final)")
         print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64 (Verified ✓)")
+        print(f"[IWS] Authentication: Unified (No caller tags)")
         print(f"[IWS] Username: {self.username}")
         print(f"[IWS] SP Account: {self.sp_account}")
     
@@ -254,8 +258,7 @@ class IWSGateway:
         """
         構建 getSystemStatus 的 SOAP Body
         
-        系統型 API - 無需 caller 和 callerPassword
-        TEST 1 精簡版本
+        統一認證結構（v6.6）
         
         Returns:
             tuple: (action_name, soap_body)
@@ -280,7 +283,7 @@ class IWSGateway:
         """
         構建 getSBDBundles 的 SOAP Body
         
-        管理型 API - 需要 caller 和 callerPassword
+        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
         
         Args:
             model_id: 可選的設備型號 ID
@@ -304,8 +307,6 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-                <callerPassword>{self.password}</callerPassword>
                 {model_id_tag}
             </request>
         </tns:getSBDBundles>'''
@@ -319,7 +320,7 @@ class IWSGateway:
         """
         構建 updateSubscriberSbdPlan 的 SOAP Body
         
-        管理型 API - 需要 caller 和 callerPassword
+        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
         變更設備費率方案
         
         Args:
@@ -347,8 +348,6 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-                <callerPassword>{self.password}</callerPassword>
                 <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
                 <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
                 <value>{imei}</value>
@@ -367,7 +366,7 @@ class IWSGateway:
         """
         構建 deactivateSubscriber 的 SOAP Body
         
-        管理型 API - 需要 caller 和 callerPassword
+        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
         註銷設備
         
         Args:
@@ -388,8 +387,6 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-                <callerPassword>{self.password}</callerPassword>
                 <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
                 <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
                 <value>{imei}</value>
@@ -408,7 +405,7 @@ class IWSGateway:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
         
-        管理型 API - 需要 caller 和 callerPassword
+        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
         暫停或恢復設備
         
         Returns:
@@ -425,8 +422,6 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <caller>{self.username}</caller>
-                <callerPassword>{self.password}</callerPassword>
                 <serviceType>{service_type}</serviceType>
                 <updateType>{update_type}</updateType>
                 <value>{imei}</value>
@@ -628,12 +623,13 @@ class IWSGateway:
     # ==================== 公開 API 方法 ====================
     
     def check_connection(self) -> Dict:
-        """測試 IWS 連線（系統型 API）"""
+        """測試 IWS 連線"""
         print("\n" + "="*60)
         print("🔍 [DIAGNOSTIC] Starting connection test...")
         print("="*60)
-        print("Method: getSystemStatus (系統型 API)")
+        print("Method: getSystemStatus")
         print("Signature: HMAC-SHA1 + Base64 ✓")
+        print("Authentication: Unified (v6.6)")
         print("="*60 + "\n")
         
         try:
@@ -670,7 +666,7 @@ class IWSGateway:
     
     def get_sbd_bundles(self, model_id: Optional[str] = None) -> Dict:
         """
-        查詢可用的 SBD 方案（管理型 API）
+        查詢可用的 SBD 方案
         
         Args:
             model_id: 可選的設備型號 ID
@@ -724,7 +720,7 @@ class IWSGateway:
                               new_plan_id: str,
                               demo_and_trial: bool = False) -> Dict:
         """
-        變更設備費率方案（管理型 API）
+        變更設備費率方案
         
         Args:
             imei: 設備 IMEI
@@ -782,7 +778,7 @@ class IWSGateway:
                              imei: str,
                              reason: str = '系統自動註銷') -> Dict:
         """
-        註銷設備（管理型 API）
+        註銷設備
         
         Args:
             imei: 設備 IMEI
@@ -831,7 +827,7 @@ class IWSGateway:
     def suspend_subscriber(self, 
                           imei: str,
                           reason: str = '系統自動暫停') -> Dict:
-        """暫停 SBD 設備（管理型 API）"""
+        """暫停 SBD 設備"""
         self._validate_imei(imei)
         
         print("\n" + "="*60)
@@ -874,7 +870,7 @@ class IWSGateway:
     def resume_subscriber(self, 
                          imei: str,
                          reason: str = '系統自動恢復') -> Dict:
-        """恢復 SBD 設備（管理型 API）"""
+        """恢復 SBD 設備"""
         self._validate_imei(imei)
         
         print("\n" + "="*60)
