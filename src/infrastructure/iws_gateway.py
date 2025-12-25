@@ -311,6 +311,49 @@ class IWSGateway:
         
         return action_name, body
     
+    def _build_validate_device_string_body(self,
+                                          device_string: str,
+                                          device_string_type: str = "IMEI",
+                                          validate_state: bool = True,
+                                          service_type: str = SERVICE_TYPE_SHORT_BURST_DATA) -> tuple[str, str]:
+        """
+        構建 validateDeviceString 的 SOAP Body
+        
+        根據 WSDL p.236-237
+        用於驗證設備的有效性、歸屬權和狀態
+        
+        Args:
+            device_string: 設備字符串（如 IMEI）
+            device_string_type: 設備類型（IMEI, SIM, etc.）
+            validate_state: 是否檢查設備狀態（true=檢查是否被其他合約使用）
+            service_type: 服務類型
+            
+        Returns:
+            tuple: (action_name, soap_body)
+        """
+        action_name = 'validateDeviceString'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        sp_account = self._safe_xml_value(self.sp_account)
+        
+        # Boolean 轉字串
+        validate_state_str = self._bool_to_string(validate_state)
+        
+        body = f'''        <tns:validateDeviceString xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <serviceType>{service_type}</serviceType>
+                <deviceString>{device_string}</deviceString>
+                <deviceStringType>{device_string_type}</deviceStringType>
+                <validateState>{validate_state_str}</validateState>
+            </request>
+        </tns:validateDeviceString>'''
+        
+        return action_name, body
+    
     def _build_get_sbd_bundles_body(self, 
                                     from_bundle_id: str = "0",
                                     for_activate: bool = True,
@@ -670,7 +713,140 @@ class IWSGateway:
             print(f"[IWS] Failed to parse account search: {e}")
             return None
     
+    def _parse_validate_device_string(self, xml_response: str) -> Dict:
+        """
+        解析 validateDeviceString 回應
+        
+        Returns:
+            Dict: 驗證結果
+        """
+        try:
+            root = ET.fromstring(xml_response)
+            
+            result = {
+                'valid': False,
+                'device_string': None,
+                'reason': None,
+                'safety_data_capable': False
+            }
+            
+            # 提取 valid
+            valid_elem = root.find('.//valid')
+            if valid_elem is None:
+                valid_elem = root.find('.//{http://www.iridium.com/}valid')
+            if valid_elem is not None and valid_elem.text:
+                result['valid'] = valid_elem.text.lower() == 'true'
+            
+            # 提取 deviceString
+            device_string_elem = root.find('.//deviceString')
+            if device_string_elem is None:
+                device_string_elem = root.find('.//{http://www.iridium.com/}deviceString')
+            if device_string_elem is not None and device_string_elem.text:
+                result['device_string'] = device_string_elem.text.strip()
+            
+            # 提取 reason（如果無效）
+            reason_elem = root.find('.//reason')
+            if reason_elem is None:
+                reason_elem = root.find('.//{http://www.iridium.com/}reason')
+            if reason_elem is not None and reason_elem.text:
+                result['reason'] = reason_elem.text.strip()
+            
+            # 提取 safetyDataCapable
+            safety_elem = root.find('.//safetyDataCapable')
+            if safety_elem is None:
+                safety_elem = root.find('.//{http://www.iridium.com/}safetyDataCapable')
+            if safety_elem is not None and safety_elem.text:
+                result['safety_data_capable'] = safety_elem.text.lower() == 'true'
+            
+            return result
+            
+        except ET.ParseError as e:
+            print(f"[IWS] Failed to parse validate device string: {e}")
+            return {
+                'valid': False,
+                'device_string': None,
+                'reason': f"Parse error: {str(e)}",
+                'safety_data_capable': False
+            }
+    
     # ==================== 公開 API 方法 ====================
+    
+    def validate_device_string(self,
+                               device_string: str,
+                               device_string_type: str = "IMEI",
+                               validate_state: bool = True) -> Dict:
+        """
+        驗證設備字符串的有效性、歸屬權和狀態
+        
+        使用 validateDeviceString 方法（根據 WSDL p.236-237）
+        
+        **重要**：在啟動設備前建議使用此方法驗證：
+        1. 設備是否屬於您的 SP 帳戶（Device Pool）
+        2. 設備格式是否正確
+        3. 設備狀態是否適合操作（如果 validate_state=True）
+        
+        Args:
+            device_string: 設備字符串（如 IMEI）
+            device_string_type: 設備類型（IMEI, SIM, etc.）
+            validate_state: 是否檢查設備狀態
+                          true = 檢查設備是否被其他合約使用或處於不可用狀態
+                          false = 只檢查格式
+                          
+        Returns:
+            Dict: 驗證結果
+                {
+                    'success': True,
+                    'valid': True/False,
+                    'device_string': '...',
+                    'reason': '...' (如果無效),
+                    'safety_data_capable': True/False,
+                    'timestamp': '...'
+                }
+        """
+        print("\n" + "="*60)
+        print("🔍 [IWS] Validating device string...")
+        print("="*60)
+        print(f"Device String: {device_string}")
+        print(f"Type: {device_string_type}")
+        print(f"Validate State: {validate_state}")
+        print("="*60 + "\n")
+        
+        try:
+            action_name, soap_body = self._build_validate_device_string_body(
+                device_string=device_string,
+                device_string_type=device_string_type,
+                validate_state=validate_state
+            )
+            
+            response_xml = self._send_soap_request(
+                soap_action=action_name,
+                soap_body=soap_body
+            )
+            
+            validation_result = self._parse_validate_device_string(response_xml)
+            
+            print("\n" + "="*60)
+            if validation_result['valid']:
+                print(f"✅ Device is valid")
+            else:
+                print(f"❌ Device is invalid")
+                if validation_result['reason']:
+                    print(f"Reason: {validation_result['reason']}")
+            print("="*60 + "\n")
+            
+            return {
+                'success': True,
+                **validation_result,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            
+        except IWSException as e:
+            print("\n" + "="*60)
+            print("❌ Validation failed")
+            print("="*60)
+            print(f"Error: {str(e)}")
+            print("="*60 + "\n")
+            raise
     
     def search_account(self, imei: str) -> Dict:
         """
@@ -1099,6 +1275,14 @@ class IWSGateway:
 
 
 # ==================== 便利函數 ====================
+
+def validate_device_string(device_string: str, 
+                          device_string_type: str = "IMEI",
+                          validate_state: bool = True) -> Dict:
+    """便利函數：驗證設備字符串"""
+    gateway = IWSGateway()
+    return gateway.validate_device_string(device_string, device_string_type, validate_state)
+
 
 def search_account(imei: str) -> Dict:
     """便利函數：搜尋帳號"""

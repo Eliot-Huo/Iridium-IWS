@@ -12,11 +12,12 @@ def diagnose_imei(imei: str):
     
     檢查項目：
     1. IMEI 格式是否正確
-    2. 帳號是否存在
-    3. 如果存在，顯示帳號資訊
+    2. 設備是否屬於您的 SP 帳戶
+    3. 設備狀態（RESERVED / ACTIVE / SUSPENDED）
+    4. 帳號是否存在（如果已啟動）
     """
     print("\n" + "="*80)
-    print("🔍 IMEI 診斷")
+    print("🔍 IMEI 完整診斷")
     print("="*80)
     print(f"IMEI: {imei}")
     print("="*80)
@@ -35,33 +36,87 @@ def diagnose_imei(imei: str):
         print(f"❌ IMEI 格式錯誤: {e}")
         return
     
-    # 檢查 2: 帳號搜尋
-    print("\n[檢查 2] 搜尋帳號...")
+    # 檢查 2: validateDeviceString（歸屬權和狀態）
+    print("\n[檢查 2] 設備驗證（歸屬權與狀態）...")
+    try:
+        validation = gateway.validate_device_string(
+            device_string=imei,
+            device_string_type="IMEI",
+            validate_state=True
+        )
+        
+        if validation['valid']:
+            print(f"✅ 設備有效")
+            print(f"   - 屬於您的 SP 帳戶: 是")
+            print(f"   - 可用於操作: 是")
+            if validation['safety_data_capable']:
+                print(f"   - 支持安全數據: 是")
+        else:
+            print(f"❌ 設備無效或不可用")
+            if validation['reason']:
+                print(f"   - 原因: {validation['reason']}")
+                
+                # 解析常見原因
+                reason = validation['reason'].lower()
+                if 'not belong' in reason or 'pool' in reason:
+                    print(f"   ⚠️  設備不屬於您的 Device Pool")
+                    print(f"   → 請使用您公司名下的設備")
+                elif 'in use' in reason or 'active' in reason:
+                    print(f"   ⚠️  設備已被其他合約使用或處於 ACTIVE 狀態")
+                    print(f"   → 先執行 deactivate 恢復到 RESERVED 狀態")
+                elif 'suspended' in reason:
+                    print(f"   ⚠️  設備處於 SUSPENDED 狀態")
+                    print(f"   → 先執行 deactivate 恢復到 RESERVED 狀態")
+            return
+            
+    except IWSException as e:
+        print(f"❌ 驗證失敗: {e}")
+        if hasattr(e, 'error_code'):
+            print(f"   - 錯誤碼: {e.error_code}")
+        return
+    
+    # 檢查 3: accountSearch（帳號查詢）
+    print("\n[檢查 3] 帳號搜尋（已啟動的設備）...")
     try:
         result = gateway.search_account(imei)
         
         if result['found']:
-            print(f"✅ 帳號存在")
+            print(f"✅ 設備已啟動")
             print(f"   - 帳號: {result['subscriber_account_number']}")
-            print(f"   - 狀態: 可以進行變更費率、暫停、恢復、註銷等操作")
+            print(f"   - 狀態: ACTIVE（可執行變更費率、暫停、恢復、註銷）")
         else:
-            print(f"❌ 帳號不存在")
-            print(f"   - 原因: 設備尚未在 IWS 系統中啟用")
-            print(f"   - 建議:")
-            print(f"     1. 確認 IMEI 是否正確")
-            print(f"     2. 檢查設備是否已在 SITEST 環境啟用")
-            print(f"     3. 嘗試使用其他已知的測試 IMEI")
+            print(f"ℹ️  設備未啟動")
+            print(f"   - 狀態: RESERVED（可執行 activateSubscriber）")
+            print(f"   - 說明: 設備處於待啟動狀態")
             
     except IWSException as e:
-        print(f"❌ 搜尋失敗: {e}")
-        if hasattr(e, 'error_code'):
-            print(f"   - 錯誤碼: {e.error_code}")
-        if hasattr(e, 'response_text') and e.response_text:
-            print(f"   - 回應預覽: {e.response_text[:200]}")
+        print(f"⚠️  帳號搜尋失敗（可能處於 RESERVED 狀態）: {e}")
     
     print("\n" + "="*80)
     print("診斷完成")
     print("="*80)
+    
+    # 總結建議
+    print("\n📋 操作建議:")
+    if validation['valid']:
+        try:
+            search_result = gateway.search_account(imei)
+            if search_result['found']:
+                print("✅ 此設備已啟動，可以執行:")
+                print("   - 變更費率 (update_subscriber_plan)")
+                print("   - 暫停設備 (suspend_subscriber)")
+                print("   - 恢復設備 (resume_subscriber)")
+                print("   - 註銷設備 (deactivate_subscriber)")
+            else:
+                print("✅ 此設備處於 RESERVED 狀態，可以執行:")
+                print("   - 啟動設備 (activate_subscriber)")
+        except:
+            print("✅ 此設備處於 RESERVED 狀態，可以執行:")
+            print("   - 啟動設備 (activate_subscriber)")
+    else:
+        print("❌ 此設備無法使用，請:")
+        print("   - 確認設備屬於您的 SP 帳戶")
+        print("   - 或使用其他可用的設備")
 
 def test_known_imeis():
     """測試一些已知的 IMEI"""
