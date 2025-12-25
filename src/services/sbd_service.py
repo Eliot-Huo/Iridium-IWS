@@ -1,6 +1,6 @@
 """
-SBD 服務業務邏輯（v6.5 Asset Management Edition）
-已整合 IWS Gateway v6.5 - 資產管理專用版
+SBD 服務業務邏輯（v6.8 WSDL Compliant Edition）
+已整合 IWS Gateway v6.8 - 完全符合 WSDL 規範
 """
 from __future__ import annotations
 from typing import Optional
@@ -256,11 +256,12 @@ class SBDService:
             result = None
             
             if request.action_type == ActionType.CHANGE_PLAN:
-                # 費率變更
+                # 費率變更（v6.8: 使用 accountUpdate）
                 result = iws_gateway.update_subscriber_plan(
                     imei=request.imei,
                     new_plan_id=request.plan_id,
-                    demo_and_trial=False  # v6.5: 使用布林值，自動轉換為 0
+                    lrit_flagstate="",  # 空字串（非 LRIT 用戶）
+                    ring_alerts_flag=False  # 不啟用 Ring Alerts
                 )
                 
             elif request.action_type == ActionType.SUSPEND:
