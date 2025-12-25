@@ -1,17 +1,27 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v4.2
-完全符合 WSDL Schema 定義 (iws_training.wsdl)
-認證資訊放置於 SOAP Body 內（SOAP Developer Guide 第 11.131 節）
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v5.0 Final
+完全符合 WSDL Schema 定義 (iws_training.wsdl) 與 SOAP Developer Guide
+
+架構師最終審查完成：
+- SOAP 1.2 標頭優化（action 僅含方法名）
+- 精確符合 Schema 的 XML 結構（tns 前綴，unqualified 子元素）
+- 嚴格執行元素順序（包含 serviceProviderAccountNumber）
+- 補全所有 SBD 帳戶與目的地元素
 """
 from __future__ import annotations
 import requests
 import urllib3
 import xml.etree.ElementTree as ET
 import re
-import hashlib
 from typing import Dict, Optional
 from datetime import datetime
-from ..config.settings import IWS_USER, IWS_PASS, IWS_ENDPOINT, REQUEST_TIMEOUT
+from ..config.settings import (
+    IWS_USER, 
+    IWS_PASS, 
+    IWS_SP_ACCOUNT,  # Service Provider Account Number
+    IWS_ENDPOINT, 
+    REQUEST_TIMEOUT
+)
 
 # 隱藏 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -27,22 +37,15 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v4.2
-    完全符合 WSDL 定義
+    IWS SOAP 1.2 API Gateway v5.0 Final
+    完全符合 WSDL 定義與架構師審查規範
     
-    認證規範（SOAP Developer Guide 第 11.131 節）:
-    - 認證資訊必須放在 SOAP Body 內的 <request> 元素中
-    - 禁止使用 HTTP Basic Auth
-    - 禁止在 SOAP Header 中放置認證資訊
-    
-    支援功能:
-    - activateSubscriber: 啟用 SBD 設備
-    - setSubscriberAccountStatus: 變更帳戶狀態（暫停/恢復）
-    
-    SOAP 1.2 規範:
-    - 命名空間: http://www.w3.org/2003/05/soap-envelope
-    - Content-Type: application/soap+xml
-    - Fault 結構: soap:Reason/soap:Text
+    關鍵規範：
+    1. SOAP 1.2 Content-Type: application/soap+xml; charset=utf-8; action="methodName"
+    2. 操作名稱使用 tns 前綴: <tns:activateSubscriber>
+    3. 子元素使用 unqualified（無前綴）: <request>, <iwsUsername>, etc.
+    4. 元素順序: iwsUsername → signature → serviceProviderAccountNumber → timestamp → caller
+    5. 補全所有必要元素: lritFlagstate, ringAlertsFlag, geoDataFlag, moAckFlag
     """
     
     # SOAP 1.2 Namespaces
@@ -51,7 +54,7 @@ class IWSGateway:
         'tns': 'http://www.iridium.com'
     }
     
-    # IWS Namespace - 符合 WSDL targetNamespace (無結尾斜線)
+    # IWS Namespace
     IWS_NS = 'http://www.iridium.com'
     
     # Delivery Methods
@@ -72,44 +75,30 @@ class IWSGateway:
     def __init__(self, 
                  username: Optional[str] = None,
                  password: Optional[str] = None,
+                 sp_account: Optional[str] = None,
                  endpoint: Optional[str] = None,
                  timeout: int = REQUEST_TIMEOUT):
-        """初始化 IWS Gateway"""
+        """
+        初始化 IWS Gateway
+        
+        Args:
+            username: IWS 使用者名稱
+            password: IWS 密碼
+            sp_account: Service Provider Account Number
+            endpoint: IWS 端點 URL
+            timeout: 請求逾時時間（秒）
+        """
         self.username = username or IWS_USER
         self.password = password or IWS_PASS
+        self.sp_account = sp_account or IWS_SP_ACCOUNT
         self.endpoint = endpoint or IWS_ENDPOINT
         self.timeout = timeout
         
-        if not all([self.username, self.password, self.endpoint]):
-            raise IWSException("Missing required IWS credentials or endpoint")
-    
-    def _generate_signature(self, timestamp: str) -> str:
-        """
-        生成簽章
-        
-        根據 IWS 規範，簽章可能是：
-        1. 密碼本身
-        2. MD5(username + password + timestamp)
-        3. SHA256(password + timestamp)
-        
-        目前使用密碼本身，如需修改請參考實際的 IWS 文檔。
-        
-        Args:
-            timestamp: ISO 格式時間戳記
-            
-        Returns:
-            str: 簽章字串
-        """
-        # 方案 1: 直接使用密碼（最簡單）
-        return self.password
-        
-        # 方案 2: MD5 hash（如果 IWS 要求）
-        # signature_input = f"{self.username}{self.password}{timestamp}"
-        # return hashlib.md5(signature_input.encode()).hexdigest()
-        
-        # 方案 3: SHA256 hash（如果 IWS 要求）
-        # signature_input = f"{self.password}{timestamp}"
-        # return hashlib.sha256(signature_input.encode()).hexdigest()
+        if not all([self.username, self.password, self.sp_account, self.endpoint]):
+            raise IWSException(
+                "Missing required IWS credentials. "
+                "Please configure IWS_USER, IWS_PASS, IWS_SP_ACCOUNT, and IWS_ENDPOINT."
+            )
     
     def _validate_imei(self, imei: str) -> bool:
         """
@@ -138,16 +127,16 @@ class IWSGateway:
         """
         構建 SOAP 1.2 Envelope
         
-        SOAP 1.2 規範（Developer Guide 第 11.131 節）:
-        - 使用 http://www.w3.org/2003/05/soap-envelope
-        - Header 必須為空 <soap:Header/>
-        - 認證資訊放在 Body 內
+        關鍵規範：
+        - SOAP 1.2 命名空間
+        - 空的 Header
+        - Body 內容使用 tns 前綴
         """
         return f'''<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="{self.NAMESPACES['soap']}">
     <soap:Header/>
     <soap:Body>
-        {body_content}
+{body_content}
     </soap:Body>
 </soap:Envelope>'''
     
@@ -162,14 +151,12 @@ class IWSGateway:
                                        ring_alerts_flag: str = 'false') -> str:
         """
         構建 activateSubscriber 的 SOAP Body
-        完全符合 WSDL activateSubscriberRequestImpl
         
-        認證欄位順序（WSDL 規範）:
-        1. iwsUsername
-        2. signature
-        3. timestamp
-        4. caller
-        5. sbdSubscriberAccount（業務資料）
+        關鍵規範：
+        1. 操作名稱使用 tns 前綴並宣告 xmlns:tns
+        2. 所有子元素使用 unqualified（無前綴，無 xmlns）
+        3. 元素順序：iwsUsername → signature → serviceProviderAccountNumber → timestamp → caller → 業務資料
+        4. 補全所有必要元素
         """
         if not destination:
             if delivery_method == self.DELIVERY_METHOD_EMAIL:
@@ -180,34 +167,33 @@ class IWSGateway:
         # 生成時間戳記（ISO 8601 格式）
         timestamp = datetime.now().isoformat()
         
-        # 生成簽章
-        signature = self._generate_signature(timestamp)
-        
-        # 構建 SOAP Body（嚴格按照 WSDL 順序）
-        body = f'''<activateSubscriber xmlns="{self.IWS_NS}">
-    <request>
-        <iwsUsername>{self.username}</iwsUsername>
-        <signature>{signature}</signature>
-        <timestamp>{timestamp}</timestamp>
-        <caller>{self.username}</caller>
-        <sbdSubscriberAccount>
-            <plan>
-                <sbdBundleId>{plan_id}</sbdBundleId>
-                <lritFlagstate>{lrit_flagstate}</lritFlagstate>
-                <ringAlertsFlag>{ring_alerts_flag}</ringAlertsFlag>
-            </plan>
-            <imei>{imei}</imei>
-            <deliveryDetails>
-                <deliveryDetail>
-                    <destination>{destination}</destination>
-                    <deliveryMethod>{delivery_method}</deliveryMethod>
-                    <geoDataFlag>{geo_data_flag}</geoDataFlag>
-                    <moAckFlag>{mo_ack_flag}</moAckFlag>
-                </deliveryDetail>
-            </deliveryDetails>
-        </sbdSubscriberAccount>
-    </request>
-</activateSubscriber>'''
+        # 構建 SOAP Body
+        # 關鍵：tns 前綴在操作名稱，xmlns:tns 宣告，子元素無前綴
+        body = f'''        <tns:activateSubscriber xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{self.password}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+                <sbdSubscriberAccount>
+                    <plan>
+                        <sbdBundleId>{plan_id}</sbdBundleId>
+                        <lritFlagstate>{lrit_flagstate}</lritFlagstate>
+                        <ringAlertsFlag>{ring_alerts_flag}</ringAlertsFlag>
+                    </plan>
+                    <imei>{imei}</imei>
+                    <deliveryDetails>
+                        <deliveryDetail>
+                            <destination>{destination}</destination>
+                            <deliveryMethod>{delivery_method}</deliveryMethod>
+                            <geoDataFlag>{geo_data_flag}</geoDataFlag>
+                            <moAckFlag>{mo_ack_flag}</moAckFlag>
+                        </deliveryDetail>
+                    </deliveryDetails>
+                </sbdSubscriberAccount>
+            </request>
+        </tns:activateSubscriber>'''
         
         return body
     
@@ -219,35 +205,51 @@ class IWSGateway:
                                                    update_type: str = UPDATE_TYPE_IMEI) -> str:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
-        完全符合 WSDL accountStatusChangeRequestImpl
         
-        認證欄位順序（WSDL 規範）:
-        1. iwsUsername
-        2. signature
-        3. timestamp
-        4. caller
-        5. 業務資料（serviceType, updateType, value, newStatus, reason）
+        關鍵規範：
+        1. 操作名稱使用 tns 前綴
+        2. 子元素使用 unqualified（無前綴）
+        3. 元素順序：認證欄位 → 業務資料
         """
-        # 生成時間戳記（ISO 8601 格式）
+        # 生成時間戳記
         timestamp = datetime.now().isoformat()
         
-        # 生成簽章
-        signature = self._generate_signature(timestamp)
+        # 構建 SOAP Body
+        body = f'''        <tns:setSubscriberAccountStatus xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{self.password}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+                <serviceType>{service_type}</serviceType>
+                <updateType>{update_type}</updateType>
+                <value>{imei}</value>
+                <newStatus>{new_status}</newStatus>
+                <reason>{reason}</reason>
+            </request>
+        </tns:setSubscriberAccountStatus>'''
         
-        # 構建 SOAP Body（嚴格按照 WSDL 順序）
-        body = f'''<setSubscriberAccountStatus xmlns="{self.IWS_NS}">
-    <request>
-        <iwsUsername>{self.username}</iwsUsername>
-        <signature>{signature}</signature>
-        <timestamp>{timestamp}</timestamp>
-        <caller>{self.username}</caller>
-        <serviceType>{service_type}</serviceType>
-        <updateType>{update_type}</updateType>
-        <value>{imei}</value>
-        <newStatus>{new_status}</newStatus>
-        <reason>{reason}</reason>
-    </request>
-</setSubscriberAccountStatus>'''
+        return body
+    
+    def _build_get_system_status_body(self) -> str:
+        """
+        構建 getSystemStatus 的 SOAP Body
+        用於連線測試
+        
+        這是最簡單的 IWS 操作，無需參數
+        """
+        timestamp = datetime.now().isoformat()
+        
+        body = f'''        <tns:getSystemStatus xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{self.password}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <caller>{self.username}</caller>
+            </request>
+        </tns:getSystemStatus>'''
         
         return body
     
@@ -257,21 +259,23 @@ class IWSGateway:
         """
         發送 SOAP 1.2 請求
         
-        SOAP 1.2 規範（Developer Guide 第 11.131 節）:
-        - Content-Type: application/soap+xml; charset=utf-8; action="..."
-        - 不使用 SOAPAction header
-        - 不使用 HTTP Basic Auth（認證已在 Body 內）
+        關鍵規範（架構師審查）：
+        - Content-Type: application/soap+xml; charset=utf-8; action="methodName"
+        - action 僅含方法名（不含 URL）
+        - 不使用獨立的 SOAPAction header
+        - 不使用 HTTP Basic Auth
         """
         soap_envelope = self._build_soap_envelope(soap_body)
         
-        # SOAP 1.2 Headers（無認證資訊）
+        # SOAP 1.2 Headers
+        # 關鍵：action 只有方法名，無 URL
         headers = {
-            'Content-Type': f'application/soap+xml; charset=utf-8; action="{self.IWS_NS}/{soap_action}"',
+            'Content-Type': f'application/soap+xml; charset=utf-8; action="{soap_action}"',
             'Accept': 'application/soap+xml, text/xml'
         }
         
         try:
-            # 不使用 HTTP Basic Auth（認證已在 SOAP Body 內）
+            # 不使用 HTTP Basic Auth（認證在 SOAP Body 內）
             response = requests.post(
                 self.endpoint,
                 data=soap_envelope,
@@ -281,8 +285,7 @@ class IWSGateway:
             )
             
             print(f"[IWS] Request to {self.endpoint}")
-            print(f"[IWS] SOAP 1.2 Action: {self.IWS_NS}/{soap_action}")
-            print(f"[IWS] Auth in Body: username={self.username}")
+            print(f"[IWS] SOAP Action: {soap_action}")
             print(f"[IWS] Response Status: {response.status_code}")
             
             if response.status_code != 200:
@@ -318,7 +321,6 @@ class IWSGateway:
             # 尋找 SOAP 1.2 Fault
             fault = root.find('.//soap:Fault', self.NAMESPACES)
             if fault is None:
-                # 嘗試不帶命名空間
                 fault = root.find('.//Fault')
             
             if fault is not None:
@@ -327,7 +329,7 @@ class IWSGateway:
                 if code_elem is None:
                     code_elem = fault.find('.//Code/Value')
                 if code_elem is None:
-                    code_elem = fault.find('.//faultcode')  # 向後相容 SOAP 1.1
+                    code_elem = fault.find('.//faultcode')  # 向後相容
                 
                 faultcode = code_elem.text if code_elem is not None else 'Unknown'
                 
@@ -336,7 +338,7 @@ class IWSGateway:
                 if reason_elem is None:
                     reason_elem = fault.find('.//Reason/Text')
                 if reason_elem is None:
-                    reason_elem = fault.find('.//faultstring')  # 向後相容 SOAP 1.1
+                    reason_elem = fault.find('.//faultstring')  # 向後相容
                 
                 faultstring = reason_elem.text if reason_elem is not None else 'Unknown error'
                 
@@ -345,7 +347,7 @@ class IWSGateway:
                 if detail is None:
                     detail = fault.find('.//Detail')
                 if detail is None:
-                    detail = fault.find('.//detail')  # 向後相容 SOAP 1.1
+                    detail = fault.find('.//detail')  # 向後相容
                 
                 detail_text = ''
                 if detail is not None:
@@ -394,6 +396,37 @@ class IWSGateway:
             return None
     
     # ==================== 公開 API 方法 ====================
+    
+    def check_connection(self) -> Dict:
+        """
+        測試 IWS 連線
+        
+        使用 getSystemStatus 方法進行最簡單的通訊測試
+        
+        Returns:
+            Dict: 連線測試結果
+        
+        Raises:
+            IWSException: 連線失敗
+        """
+        try:
+            soap_body = self._build_get_system_status_body()
+            
+            response_xml = self._send_soap_request(
+                soap_action='getSystemStatus',
+                soap_body=soap_body
+            )
+            
+            return {
+                'success': True,
+                'message': 'IWS connection successful',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except IWSException:
+            raise
+        except Exception as e:
+            raise IWSException(f"Connection test failed: {str(e)}")
     
     def activate_subscriber(self,
                           imei: str,
@@ -552,6 +585,12 @@ class IWSGateway:
 
 
 # ==================== 便利函數 ====================
+
+def check_iws_connection() -> Dict:
+    """便利函數：測試 IWS 連線"""
+    gateway = IWSGateway()
+    return gateway.check_connection()
+
 
 def activate_sbd_device(imei: str, 
                        plan_id: str,

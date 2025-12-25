@@ -69,6 +69,7 @@ def _get_secret(key: str, default: Any = None, required: bool = False) -> Any:
 # 從 st.secrets 讀取 IWS 憑證
 IWS_USER = _get_secret('IWS_USER', '')
 IWS_PASS = _get_secret('IWS_PASS', '')
+IWS_SP_ACCOUNT = _get_secret('IWS_SP_ACCOUNT', '')  # Service Provider Account Number
 IWS_ENDPOINT = _get_secret('IWS_ENDPOINT', 'https://ws.iridium.com/services/information.asmx')
 
 # IWS 連線參數
@@ -135,7 +136,7 @@ def validate_configuration(check_iws: bool = False, check_ftp: bool = False) -> 
     results = {}
     
     if check_iws:
-        results['iws_configured'] = bool(IWS_USER and IWS_PASS)
+        results['iws_configured'] = bool(IWS_USER and IWS_PASS and IWS_SP_ACCOUNT)
         results['iws_endpoint'] = bool(IWS_ENDPOINT)
     
     if check_ftp:
@@ -155,7 +156,7 @@ def get_configuration_status() -> str:
     status = []
     
     # IWS 狀態
-    if IWS_USER and IWS_PASS:
+    if IWS_USER and IWS_PASS and IWS_SP_ACCOUNT:
         status.append("✓ IWS 已配置")
     else:
         status.append("✗ IWS 未配置")
