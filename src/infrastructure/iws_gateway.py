@@ -1,11 +1,11 @@
 """
-IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.6 Final
-完全符合 SITEST 環境要求
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v6.7 Final
+完全符合 WSDL Schema 定義與 SITEST 環境要求
 
-v6.6 Final 修正：
-- 徹底移除所有 <caller> 與 <callerPassword> 標籤
-- 統一認證結構：僅使用 iwsUsername + signature + timestamp
-- 布林值轉換為數字（0/1）
+v6.7 Final 修正：
+- 修正 updateSubscriberSbdPlan 的 plan 標籤順序（Schema 對齊）
+- 修正 getSBDBundles 加入 serviceType（解決 "No plan provided"）
+- 維持 v6.6 的統一認證結構（無 caller 標籤）
 - HMAC-SHA1 + Base64 簽章（已驗證成功）
 """
 from __future__ import annotations
@@ -40,8 +40,8 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP 1.2 API Gateway v6.6 Final
-    SITEST Environment Optimized - 針對 SITEST 環境優化
+    IWS SOAP 1.2 API Gateway v6.7 Final
+    SITEST Environment Optimized - WSDL Schema Compliant
     
     核心管理功能：
     - 連線測試（getSystemStatus）
@@ -51,7 +51,7 @@ class IWSGateway:
     - 暫停設備（setSubscriberAccountStatus - SUSPENDED）
     - 恢復設備（setSubscriberAccountStatus - ACTIVE）
     
-    認證方式（v6.6 統一）：
+    認證方式（v6.6/v6.7 統一）：
     - 所有請求統一使用：iwsUsername + signature + timestamp
     - 不使用 caller 和 callerPassword（SITEST 不支援）
     
@@ -113,9 +113,10 @@ class IWSGateway:
                 "Please configure IWS_USER, IWS_PASS, and IWS_ENDPOINT."
             )
         
-        print(f"\n[IWS] Gateway initialized (v6.6 Final)")
+        print(f"\n[IWS] Gateway initialized (v6.7 Final)")
         print(f"[IWS] Signature Algorithm: HMAC-SHA1 + Base64 (Verified ✓)")
         print(f"[IWS] Authentication: Unified (No caller tags)")
+        print(f"[IWS] Schema: WSDL Compliant ✓")
         print(f"[IWS] Username: {self.username}")
         print(f"[IWS] SP Account: {self.sp_account}")
     
@@ -258,7 +259,7 @@ class IWSGateway:
         """
         構建 getSystemStatus 的 SOAP Body
         
-        統一認證結構（v6.6）
+        統一認證結構（v6.6/v6.7）
         
         Returns:
             tuple: (action_name, soap_body)
@@ -283,7 +284,7 @@ class IWSGateway:
         """
         構建 getSBDBundles 的 SOAP Body
         
-        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
+        v6.7: 加入 serviceType（解決 "No plan provided" 錯誤）
         
         Args:
             model_id: 可選的設備型號 ID
@@ -307,6 +308,7 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
+                <serviceType>{self.SERVICE_TYPE_SHORT_BURST_DATA}</serviceType>
                 {model_id_tag}
             </request>
         </tns:getSBDBundles>'''
@@ -316,17 +318,21 @@ class IWSGateway:
     def _build_update_subscriber_plan_body(self,
                                            imei: str,
                                            new_plan_id: str,
-                                           demo_and_trial: bool = False) -> tuple[str, str]:
+                                           demo_and_trial: bool = False,
+                                           lrit_flagstate: bool = False,
+                                           ring_alerts_flag: bool = False) -> tuple[str, str]:
         """
         構建 updateSubscriberSbdPlan 的 SOAP Body
         
-        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
+        v6.7: 修正 plan 標籤順序（完全符合 WSDL Schema）
         變更設備費率方案
         
         Args:
             imei: 設備 IMEI
             new_plan_id: 新的 SBD Bundle ID（會自動轉換為純數字）
             demo_and_trial: Demo and Trial（預設 False）
+            lrit_flagstate: LRIT Flag State（預設 False）
+            ring_alerts_flag: Ring Alerts Flag（預設 False）
             
         Returns:
             tuple: (action_name, soap_body)
@@ -339,9 +345,13 @@ class IWSGateway:
         # 提取純數字
         plan_id_digits = self._extract_plan_id_digits(new_plan_id)
         
-        # 布林值轉換為數字
+        # 布林值轉換為數字（Long 型別）
+        lrit_flagstate_value = self._bool_to_int(lrit_flagstate)
         demo_and_trial_value = self._bool_to_int(demo_and_trial)
+        ring_alerts_flag_value = self._bool_to_int(ring_alerts_flag)
         
+        # v6.7: 嚴格按照 Schema 順序
+        # 順序: lritFlagstate → demoAndTrial → sbdBundleId → ringAlertsFlag
         body = f'''        <tns:updateSubscriberSbdPlan xmlns:tns="{self.IWS_NS}">
             <request>
                 <iwsUsername>{self.username}</iwsUsername>
@@ -352,8 +362,10 @@ class IWSGateway:
                 <updateType>{self.UPDATE_TYPE_IMEI}</updateType>
                 <value>{imei}</value>
                 <plan>
-                    <sbdBundleId>{plan_id_digits}</sbdBundleId>
+                    <lritFlagstate>{lrit_flagstate_value}</lritFlagstate>
                     <demoAndTrial>{demo_and_trial_value}</demoAndTrial>
+                    <sbdBundleId>{plan_id_digits}</sbdBundleId>
+                    <ringAlertsFlag>{ring_alerts_flag_value}</ringAlertsFlag>
                 </plan>
             </request>
         </tns:updateSubscriberSbdPlan>'''
@@ -366,7 +378,7 @@ class IWSGateway:
         """
         構建 deactivateSubscriber 的 SOAP Body
         
-        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
+        v6.6/v6.7: 統一認證結構（無 caller 標籤）
         註銷設備
         
         Args:
@@ -405,7 +417,7 @@ class IWSGateway:
         """
         構建 setSubscriberAccountStatus 的 SOAP Body
         
-        v6.6: 移除 caller 和 callerPassword，使用統一認證結構
+        v6.6/v6.7: 統一認證結構（無 caller 標籤）
         暫停或恢復設備
         
         Returns:
@@ -629,7 +641,7 @@ class IWSGateway:
         print("="*60)
         print("Method: getSystemStatus")
         print("Signature: HMAC-SHA1 + Base64 ✓")
-        print("Authentication: Unified (v6.6)")
+        print("Authentication: Unified (v6.7)")
         print("="*60 + "\n")
         
         try:
@@ -718,7 +730,9 @@ class IWSGateway:
     def update_subscriber_plan(self,
                               imei: str,
                               new_plan_id: str,
-                              demo_and_trial: bool = False) -> Dict:
+                              demo_and_trial: bool = False,
+                              lrit_flagstate: bool = False,
+                              ring_alerts_flag: bool = False) -> Dict:
         """
         變更設備費率方案
         
@@ -726,6 +740,8 @@ class IWSGateway:
             imei: 設備 IMEI
             new_plan_id: 新的 SBD Bundle ID（支援 "SBD12" 或 "12" 格式）
             demo_and_trial: Demo and Trial（預設 False）
+            lrit_flagstate: LRIT Flag State（預設 False）
+            ring_alerts_flag: Ring Alerts Flag（預設 False）
             
         Returns:
             Dict: 操作結果
@@ -737,14 +753,18 @@ class IWSGateway:
         print("="*60)
         print(f"IMEI: {imei}")
         print(f"New Plan: {new_plan_id}")
-        print(f"Demo and Trial: {demo_and_trial} → {self._bool_to_int(demo_and_trial)}")
+        print(f"lritFlagstate: {lrit_flagstate} → {self._bool_to_int(lrit_flagstate)}")
+        print(f"demoAndTrial: {demo_and_trial} → {self._bool_to_int(demo_and_trial)}")
+        print(f"ringAlertsFlag: {ring_alerts_flag} → {self._bool_to_int(ring_alerts_flag)}")
         print("="*60 + "\n")
         
         try:
             action_name, soap_body = self._build_update_subscriber_plan_body(
                 imei=imei,
                 new_plan_id=new_plan_id,
-                demo_and_trial=demo_and_trial
+                demo_and_trial=demo_and_trial,
+                lrit_flagstate=lrit_flagstate,
+                ring_alerts_flag=ring_alerts_flag
             )
             
             response_xml = self._send_soap_request(

@@ -1,5 +1,5 @@
 """
-SBD 管理系統 - Streamlit 主程式 v6.5
+SBD 管理系統 - Streamlit 主程式 v6.7
 Asset Management Edition - 資產管理專用版
 """
 import streamlit as st
@@ -99,7 +99,7 @@ def render_cdr_monitor():
                     '費用 ($)': f'${record.cost:.2f}'
                 })
             
-            st.dataframe(display_data, width='stretch')
+            st.dataframe(display_data, use_container_width=True)
             
             # 統計資訊
             total_cost = CDRService.calculate_total_cost(records)
@@ -152,7 +152,7 @@ def render_customer_view():
         
         st.markdown("---")
         
-        if st.button("🚀 提交變更費率申請", type="primary", key="submit_plan_change"):
+        if st.button("🚀 提交變更費率申請", type="primary", key="submit_plan_change", use_container_width=True):
             if not imei_input or len(imei_input) != 15:
                 st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
             elif not imei_input.isdigit():
@@ -186,7 +186,7 @@ def render_customer_view():
         
         st.markdown("---")
         
-        if st.button("⏸️ 提交暫停申請", type="primary", key="submit_suspend"):
+        if st.button("⏸️ 提交暫停申請", type="primary", key="submit_suspend", use_container_width=True):
             if not imei_input or len(imei_input) != 15:
                 st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
             elif not imei_input.isdigit():
@@ -223,7 +223,7 @@ def render_customer_view():
         
         st.markdown("---")
         
-        if st.button("🔴 提交註銷申請", type="primary", key="submit_deactivate", disabled=not confirm_deactivate):
+        if st.button("🔴 提交註銷申請", type="primary", key="submit_deactivate", disabled=not confirm_deactivate, use_container_width=True):
             if not imei_input or len(imei_input) != 15:
                 st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
             elif not imei_input.isdigit():
@@ -329,7 +329,8 @@ def render_assistant_view():
                 if st.button(
                     "✅ 確認並執行 IWS",
                     key=f"approve_{request.request_id}",
-                    type="primary"
+                    type="primary",
+                    use_container_width=True
                 ):
                     try:
                         approved_request = st.session_state.sbd_service.process_finance_approval(
