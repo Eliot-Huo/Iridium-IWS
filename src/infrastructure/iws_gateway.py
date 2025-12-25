@@ -1,6 +1,7 @@
 """
-IWS (Iridium Web Services) SOAP API Gateway v4.0 Final
+IWS (Iridium Web Services) SOAP 1.2 API Gateway v4.1
 完全符合 WSDL Schema 定義 (iws_training.wsdl)
+升級至 SOAP 1.2 規範
 """
 from __future__ import annotations
 import requests
@@ -25,19 +26,22 @@ class IWSException(Exception):
 
 class IWSGateway:
     """
-    IWS SOAP API Gateway v4.0 Final
+    IWS SOAP 1.2 API Gateway v4.1
     完全符合 WSDL 定義
     
     支援功能:
     - activateSubscriber: 啟用 SBD 設備
     - setSubscriberAccountStatus: 變更帳戶狀態（暫停/恢復）
+    
+    SOAP 1.2 規範:
+    - 命名空間: http://www.w3.org/2003/05/soap-envelope
+    - Content-Type: application/soap+xml
+    - Fault 結構: soap:Reason/soap:Text
     """
     
-    # SOAP Namespaces
+    # SOAP 1.2 Namespaces
     NAMESPACES = {
-        'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
-        'xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-        'xsd': 'http://www.w3.org/2001/XMLSchema',
+        'soap': 'http://www.w3.org/2003/05/soap-envelope',
         'tns': 'http://www.iridium.com'
     }
     
@@ -97,11 +101,15 @@ class IWSGateway:
         return True
     
     def _build_soap_envelope(self, body_content: str) -> str:
-        """構建 SOAP Envelope"""
+        """
+        構建 SOAP 1.2 Envelope
+        
+        SOAP 1.2 規範:
+        - 使用 http://www.w3.org/2003/05/soap-envelope
+        - 不需要 xsi 和 xsd 命名空間
+        """
         return f'''<?xml version="1.0" encoding="UTF-8"?>
-<soap:Envelope xmlns:soap="{self.NAMESPACES['soap']}" 
-               xmlns:xsi="{self.NAMESPACES['xsi']}" 
-               xmlns:xsd="{self.NAMESPACES['xsd']}">
+<soap:Envelope xmlns:soap="{self.NAMESPACES['soap']}">
     <soap:Body>
         {body_content}
     </soap:Body>
@@ -174,13 +182,19 @@ class IWSGateway:
     def _send_soap_request(self, 
                           soap_action: str,
                           soap_body: str) -> str:
-        """發送 SOAP 請求"""
+        """
+        發送 SOAP 1.2 請求
+        
+        SOAP 1.2 規範:
+        - Content-Type: application/soap+xml; charset=utf-8; action="..."
+        - 不使用 SOAPAction header
+        """
         soap_envelope = self._build_soap_envelope(soap_body)
         
+        # SOAP 1.2 Headers
         headers = {
-            'Content-Type': 'text/xml; charset=utf-8',
-            'SOAPAction': f'"{soap_action}"',
-            'Accept': 'text/xml'
+            'Content-Type': f'application/soap+xml; charset=utf-8; action="{self.IWS_NS}/{soap_action}"',
+            'Accept': 'application/soap+xml, text/xml'
         }
         
         try:
@@ -194,7 +208,7 @@ class IWSGateway:
             )
             
             print(f"[IWS] Request to {self.endpoint}")
-            print(f"[IWS] SOAP Action: {soap_action}")
+            print(f"[IWS] SOAP 1.2 Action: {self.IWS_NS}/{soap_action}")
             print(f"[IWS] Response Status: {response.status_code}")
             
             if response.status_code != 200:
@@ -216,19 +230,49 @@ class IWSGateway:
             raise IWSException(f"Request failed: {str(e)}")
     
     def _check_soap_fault(self, xml_response: str):
-        """檢查 SOAP Fault"""
+        """
+        檢查 SOAP 1.2 Fault
+        
+        SOAP 1.2 Fault 結構:
+        - soap:Code/soap:Value
+        - soap:Reason/soap:Text
+        - soap:Detail
+        """
         try:
             root = ET.fromstring(xml_response)
             
+            # 尋找 SOAP 1.2 Fault
             fault = root.find('.//soap:Fault', self.NAMESPACES)
             if fault is None:
+                # 嘗試不帶命名空間
                 fault = root.find('.//Fault')
             
             if fault is not None:
-                faultcode = fault.findtext('faultcode', 'Unknown')
-                faultstring = fault.findtext('faultstring', 'Unknown error')
+                # SOAP 1.2: soap:Code/soap:Value
+                code_elem = fault.find('soap:Code/soap:Value', self.NAMESPACES)
+                if code_elem is None:
+                    code_elem = fault.find('.//Code/Value')
+                if code_elem is None:
+                    code_elem = fault.find('.//faultcode')  # 向後相容 SOAP 1.1
                 
-                detail = fault.find('detail')
+                faultcode = code_elem.text if code_elem is not None else 'Unknown'
+                
+                # SOAP 1.2: soap:Reason/soap:Text
+                reason_elem = fault.find('soap:Reason/soap:Text', self.NAMESPACES)
+                if reason_elem is None:
+                    reason_elem = fault.find('.//Reason/Text')
+                if reason_elem is None:
+                    reason_elem = fault.find('.//faultstring')  # 向後相容 SOAP 1.1
+                
+                faultstring = reason_elem.text if reason_elem is not None else 'Unknown error'
+                
+                # Detail
+                detail = fault.find('soap:Detail', self.NAMESPACES)
+                if detail is None:
+                    detail = fault.find('.//Detail')
+                if detail is None:
+                    detail = fault.find('.//detail')  # 向後相容 SOAP 1.1
+                
                 detail_text = ''
                 if detail is not None:
                     detail_text = ' | '.join(
