@@ -3,9 +3,10 @@ SBD 管理系統 - Streamlit 主程式
 """
 import streamlit as st
 from datetime import datetime
-from src.data_access import InMemoryRepository
-from src.services import SBDService, CDRService
-from src.models import UserRole, RequestStatus
+from src.repositories.repo import InMemoryRepository
+from src.services.sbd_service import SBDService
+from src.services.cdr_service_tapii import CDRService
+from src.models.models import UserRole, RequestStatus
 from src.config.constants import RATE_PLANS, ACTIVATION_FEE
 
 
@@ -97,7 +98,7 @@ def render_cdr_monitor():
                     '費用 ($)': f'${record.cost:.2f}'
                 })
             
-            st.dataframe(display_data, width="stretch")
+            st.dataframe(display_data, use_container_width=True)
             
             # 統計資訊
             total_cost = CDRService.calculate_total_cost(records)
@@ -156,7 +157,7 @@ def render_customer_view():
         
         # 提交申請
         st.markdown("---")
-        if st.button("🚀 提交申請", type="primary", width="stretch"):
+        if st.button("🚀 提交申請", type="primary", use_container_width=True):
             if not imei_input or len(imei_input) != 15:
                 st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
             elif not imei_input.isdigit():
@@ -267,7 +268,7 @@ def render_assistant_view():
                 '更新時間': req.updated_at.strftime('%Y-%m-%d %H:%M:%S') if req.updated_at else 'N/A'
             })
         
-        st.dataframe(display_data, width="stretch")
+        st.dataframe(display_data, use_container_width=True)
     else:
         st.info("尚無已處理的請求")
 
