@@ -390,11 +390,9 @@ class IWSGateway:
                 <signature>{signature}</signature>
                 <serviceProviderAccountNumber>{sp_account}</serviceProviderAccountNumber>
                 <timestamp>{timestamp}</timestamp>
-                <plan>
-                    <fromBundleId>{from_bundle_id}</fromBundleId>
-                    <forActivate>{for_activate_str}</forActivate>
+                <fromBundleId>{from_bundle_id}</fromBundleId>
+                <forActivate>{for_activate_str}</forActivate>
 {model_id_tag}
-                </plan>
             </request>
         </tns:getSBDBundles>'''
         

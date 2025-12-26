@@ -1,0 +1,40 @@
+graph TD
+    Start([用戶發起請求]) --> Operation{操作類型?}
+    
+    %% ==================== 變更費率 ====================
+    Operation -->|變更費率| CP_Start[變更費率]
+    CP_Start --> CP_1[1. 驗證 IMEI 格式]
+    CP_1 --> CP_2[2. validateDeviceString<br/>確認歸屬權]
+    CP_2 --> CP_3[3. accountSearch<br/>查詢帳號]
+    CP_3 --> CP_4[4. accountUpdate<br/>更新費率]
+    CP_4 --> CP_Success[✅ 變更成功<br/>TransactionID: XXX]
+    
+    %% ==================== 暫停設備 ====================
+    Operation -->|暫停設備| SU_Start[暫停設備]
+    SU_Start --> SU_1[1. 驗證 IMEI 格式]
+    SU_1 --> SU_2[2. validateDeviceString<br/>確認歸屬權]
+    SU_2 --> SU_3[3. 檢查狀態<br/>必須是 ACTIVE]
+    SU_3 --> SU_4[4. setSubscriberAccountStatus<br/>SUSPENDED]
+    SU_4 --> SU_Success[✅ 暫停成功<br/>設備狀態: SUSPENDED]
+    
+    %% ==================== 註銷設備 ====================
+    Operation -->|註銷設備| DE_Start[註銷設備]
+    DE_Start --> DE_1[1. 驗證 IMEI 格式]
+    DE_1 --> DE_2[2. validateDeviceString<br/>確認歸屬權]
+    DE_2 --> DE_3[3. 檢查狀態<br/>ACTIVE 或 SUSPENDED]
+    DE_3 --> DE_4[4. setSubscriberAccountStatus<br/>DEACTIVATED]
+    DE_4 --> DE_Success[✅ 註銷成功<br/>設備狀態: RESERVED<br/>可重新啟動]
+    
+    %% ==================== 結束 ====================
+    CP_Success --> End([操作完成<br/>更新資料庫])
+    SU_Success --> End
+    DE_Success --> End
+    
+    %% ==================== 樣式 ====================
+    classDef successStyle fill:#ccffcc,stroke:#00cc00,stroke-width:3px
+    classDef processStyle fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef startStyle fill:#fff4cc,stroke:#ff9900,stroke-width:2px
+    
+    class CP_Success,SU_Success,DE_Success successStyle
+    class CP_1,CP_2,CP_3,CP_4,SU_1,SU_2,SU_3,SU_4,DE_1,DE_2,DE_3,DE_4 processStyle
+    class Start,Operation,End startStyle

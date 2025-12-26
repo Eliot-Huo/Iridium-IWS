@@ -1,0 +1,82 @@
+graph TD
+    Start([開始操作]) --> ValidateIMEI{驗證 IMEI 格式}
+    
+    ValidateIMEI -->|格式錯誤| Error1[錯誤: IMEI 格式不正確]
+    ValidateIMEI -->|格式正確| CheckOperation{選擇操作類型}
+    
+    CheckOperation -->|變更費率| ChangePlan[變更費率流程]
+    CheckOperation -->|暫停設備| Suspend[暫停流程]
+    CheckOperation -->|註銷設備| Deactivate[註銷流程]
+    
+    %% ==================== 變更費率流程 ====================
+    ChangePlan --> CP_Validate[validateDeviceString<br/>檢查歸屬權]
+    CP_Validate -->|不屬於帳戶| CP_Error1[錯誤: 設備不屬於 SP 帳戶]
+    CP_Validate -->|有效| CP_Search[accountSearch<br/>查詢訂閱者帳號]
+    
+    CP_Search -->|找不到帳號| CP_Error2[錯誤: 設備未啟動<br/>狀態: RESERVED]
+    CP_Search -->|找到帳號| CP_GetAccount[取得 subscriberAccountNumber]
+    
+    CP_GetAccount --> CP_Update[accountUpdate<br/>更新費率方案]
+    
+    CP_Update -->|HTTP 500| CP_Error3[錯誤: 更新失敗<br/>保持 APPROVED 狀態]
+    CP_Update -->|成功| CP_Success[✅ 費率變更成功<br/>狀態: EXECUTED<br/>記錄 TransactionID]
+    
+    %% ==================== 暫停流程 ====================
+    Suspend --> SU_Validate[validateDeviceString<br/>檢查歸屬權]
+    SU_Validate -->|不屬於帳戶| SU_Error1[錯誤: 設備不屬於 SP 帳戶]
+    SU_Validate -->|有效| SU_CheckState{檢查設備狀態}
+    
+    SU_CheckState -->|RESERVED| SU_Error2[錯誤: 設備未啟動<br/>無法暫停]
+    SU_CheckState -->|SUSPENDED| SU_Error3[錯誤: 設備已暫停<br/>無需重複操作]
+    SU_CheckState -->|ACTIVE| SU_SetStatus[setSubscriberAccountStatus<br/>newStatus = SUSPENDED]
+    
+    SU_SetStatus -->|HTTP 500| SU_Error4[錯誤: 暫停失敗<br/>保持 APPROVED 狀態]
+    SU_SetStatus -->|成功| SU_Success[✅ 暫停成功<br/>狀態: EXECUTED<br/>設備狀態: SUSPENDED]
+    
+    %% ==================== 註銷流程 ====================
+    Deactivate --> DE_Validate[validateDeviceString<br/>檢查歸屬權]
+    DE_Validate -->|不屬於帳戶| DE_Error1[錯誤: 設備不屬於 SP 帳戶]
+    DE_Validate -->|有效| DE_CheckState{檢查設備狀態}
+    
+    DE_CheckState -->|RESERVED| DE_Error2[錯誤: 設備未啟動<br/>無需註銷]
+    DE_CheckState -->|ACTIVE/SUSPENDED| DE_SetStatus[setSubscriberAccountStatus<br/>newStatus = DEACTIVATED]
+    
+    DE_SetStatus -->|HTTP 500| DE_Error3[錯誤: 註銷失敗<br/>保持 APPROVED 狀態]
+    DE_SetStatus -->|成功| DE_Release[✅ 註銷成功<br/>狀態: EXECUTED<br/>設備狀態: RESERVED]
+    
+    DE_Release --> DE_Note[註: IMEI 立即釋放<br/>可重新啟動]
+    
+    %% ==================== 錯誤終點 ====================
+    CP_Error1 --> End([操作結束])
+    CP_Error2 --> End
+    CP_Error3 --> ManualIntervention[需要人工介入<br/>請求保持 APPROVED]
+    
+    SU_Error1 --> End
+    SU_Error2 --> End
+    SU_Error3 --> End
+    SU_Error4 --> ManualIntervention
+    
+    DE_Error1 --> End
+    DE_Error2 --> End
+    DE_Error3 --> ManualIntervention
+    
+    %% ==================== 成功終點 ====================
+    CP_Success --> SaveRequest[儲存請求記錄]
+    SU_Success --> SaveRequest
+    DE_Note --> SaveRequest
+    
+    ManualIntervention --> End
+    SaveRequest --> End
+    
+    %% ==================== 樣式定義 ====================
+    classDef errorStyle fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef successStyle fill:#ccffcc,stroke:#00cc00,stroke-width:2px
+    classDef processStyle fill:#cce5ff,stroke:#0066cc,stroke-width:2px
+    classDef decisionStyle fill:#fff4cc,stroke:#ff9900,stroke-width:2px
+    classDef warningStyle fill:#ffe6cc,stroke:#ff6600,stroke-width:2px
+    
+    class CP_Error1,CP_Error2,CP_Error3,SU_Error1,SU_Error2,SU_Error3,SU_Error4,DE_Error1,DE_Error2,DE_Error3,Error1 errorStyle
+    class CP_Success,SU_Success,DE_Release,DE_Note successStyle
+    class CP_Validate,CP_Search,CP_Update,SU_Validate,SU_SetStatus,DE_Validate,DE_SetStatus,ValidateIMEI processStyle
+    class CheckOperation,SU_CheckState,DE_CheckState decisionStyle
+    class ManualIntervention warningStyle

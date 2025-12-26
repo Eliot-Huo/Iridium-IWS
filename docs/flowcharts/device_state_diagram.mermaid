@@ -1,0 +1,50 @@
+stateDiagram-v2
+    [*] --> RESERVED: 設備初始狀態<br/>或註銷後
+    
+    RESERVED --> ACTIVE: activateSubscriber<br/>啟動設備
+    
+    ACTIVE --> SUSPENDED: suspend_subscriber<br/>暫停設備
+    ACTIVE --> ACTIVE: update_subscriber_plan<br/>變更費率
+    ACTIVE --> RESERVED: deactivate_subscriber<br/>註銷設備
+    
+    SUSPENDED --> ACTIVE: resume_subscriber<br/>恢復設備
+    SUSPENDED --> RESERVED: deactivate_subscriber<br/>註銷設備
+    
+    RESERVED --> [*]: 設備可重新啟動
+    
+    note right of RESERVED
+        ✅ 可執行操作:
+        - activateSubscriber
+        - validateDeviceString
+        
+        ❌ 不可執行:
+        - update_subscriber_plan
+        - suspend_subscriber
+        - resume_subscriber
+        - deactivate_subscriber
+    end note
+    
+    note right of ACTIVE
+        ✅ 可執行操作:
+        - update_subscriber_plan
+        - suspend_subscriber
+        - deactivate_subscriber
+        - accountSearch (有帳號)
+        - validateDeviceString
+        
+        ❌ 不可執行:
+        - activateSubscriber
+        - resume_subscriber
+    end note
+    
+    note right of SUSPENDED
+        ✅ 可執行操作:
+        - resume_subscriber
+        - deactivate_subscriber
+        - validateDeviceString
+        
+        ❌ 不可執行:
+        - activateSubscriber
+        - update_subscriber_plan
+        - suspend_subscriber
+    end note
