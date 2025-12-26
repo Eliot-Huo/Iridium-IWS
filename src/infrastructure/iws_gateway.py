@@ -361,11 +361,27 @@ class IWSGateway:
         """
         構建 getSBDBundles 的 SOAP Body
         
-        根據 WSDL p.161-162
+        根據實際 API 測試結果（v6.9.4 - 最終正確版本）
+        
+        重要發現：
+        1. fromBundleId 和 forActivate 是查詢參數，直接放在 <request> 下
+        2. <sbdPlan /> 是空標籤，用來指示服務類型（SBD）
+        3. <sbdPlan> 內部的字段（sbdBundleId, lritFlagstate 等）是用於配置，不是查詢
+        
+        正確結構：
+        <request>
+            <iwsUsername>...</iwsUsername>
+            <signature>...</signature>
+            <serviceProviderAccountNumber>...</serviceProviderAccountNumber>
+            <timestamp>...</timestamp>
+            <fromBundleId>0</fromBundleId>       <!-- 查詢參數 -->
+            <forActivate>true</forActivate>      <!-- 查詢參數 -->
+            <sbdPlan />                          <!-- 服務類型標識 -->
+        </request>
         
         Args:
-            from_bundle_id: 現有 bundle ID（新啟用用 "0"）
-            for_activate: 是否為新啟用（true=新啟用, false=更新現有）
+            from_bundle_id: 起始 Bundle ID（通常用 "0"）
+            for_activate: 是否用於啟動（true）或更新（false）
             model_id: 可選的設備型號 ID
             
         Returns:
@@ -393,6 +409,7 @@ class IWSGateway:
                 <fromBundleId>{from_bundle_id}</fromBundleId>
                 <forActivate>{for_activate_str}</forActivate>
 {model_id_tag}
+                <sbdPlan />
             </request>
         </tns:getSBDBundles>'''
         
@@ -683,24 +700,72 @@ class IWSGateway:
             print(f"[IWS] Failed to parse SBD bundles: {e}")
             return []
     
-    def _parse_account_search(self, xml_response: str) -> Optional[str]:
+    def _parse_account_search(self, xml_response: str, target_imei: Optional[str] = None) -> Optional[str]:
         """
-        解析 accountSearch 回應，提取 subscriberAccountNumber
+        解析 accountSearch 回應，提取 accountNumber
         
+        accountSearch 返回订阅者列表，需要遍历找到匹配的 IMEI
+        
+        Args:
+            xml_response: SOAP 响应 XML
+            target_imei: 要查找的 IMEI（可选，如果提供则匹配 IMEI）
+            
         Returns:
-            Optional[str]: 訂閱者帳號或 None
+            Optional[str]: 訂閱者帳號 (accountNumber) 或 None
         """
         try:
             root = ET.fromstring(xml_response)
             
-            # 尋找 subscriberAccountNumber
-            paths = [
-                './/subscriberAccountNumber',
-                './/{http://www.iridium.com/}subscriberAccountNumber',
-                './/sbdSubscriberAccount/subscriberAccountNumber',
-            ]
+            # 查找所有 subscriber 元素
+            subscribers = root.findall('.//subscriber')
             
-            for path in paths:
+            if not subscribers:
+                # 尝试其他命名空间
+                subscribers = root.findall('.//{http://www.iridium.com/}subscriber')
+            
+            if not subscribers:
+                print(f"[IWS] No subscribers found in response")
+                return None
+            
+            print(f"[IWS] Found {len(subscribers)} subscriber(s)")
+            
+            # 如果提供了 target_imei，查找匹配的订阅者
+            if target_imei:
+                for subscriber in subscribers:
+                    # 查找此订阅者的 IMEI
+                    imei_elem = subscriber.find('.//imei')
+                    if imei_elem is None:
+                        imei_elem = subscriber.find('.//{http://www.iridium.com/}imei')
+                    
+                    if imei_elem is not None and imei_elem.text:
+                        imei_value = imei_elem.text.strip()
+                        print(f"[IWS] Checking subscriber with IMEI: {imei_value}")
+                        
+                        if imei_value == target_imei:
+                            # 找到匹配的 IMEI，提取 accountNumber
+                            account_elem = subscriber.find('.//accountNumber')
+                            if account_elem is None:
+                                account_elem = subscriber.find('.//{http://www.iridium.com/}accountNumber')
+                            
+                            if account_elem is not None and account_elem.text:
+                                account_number = account_elem.text.strip()
+                                print(f"[IWS] Found matching subscriber: {account_number}")
+                                return account_number
+                
+                print(f"[IWS] No subscriber found with IMEI: {target_imei}")
+                return None
+            
+            # 如果没有提供 target_imei，返回第一个订阅者的 accountNumber
+            first_subscriber = subscribers[0]
+            account_elem = first_subscriber.find('.//accountNumber')
+            if account_elem is None:
+                account_elem = first_subscriber.find('.//{http://www.iridium.com/}accountNumber')
+            
+            if account_elem is not None and account_elem.text:
+                return account_elem.text.strip()
+            
+            # 备用：尝试查找 subscriberAccountNumber（旧格式）
+            for path in ['.//subscriberAccountNumber', './/{http://www.iridium.com/}subscriberAccountNumber']:
                 elem = root.find(path)
                 if elem is not None and elem.text:
                     return elem.text.strip()
@@ -874,7 +939,7 @@ class IWSGateway:
                 soap_body=soap_body
             )
             
-            subscriber_account_number = self._parse_account_search(response_xml)
+            subscriber_account_number = self._parse_account_search(response_xml, target_imei=imei)
             
             if subscriber_account_number:
                 print("\n" + "="*60)
@@ -1060,7 +1125,7 @@ class IWSGateway:
                 soap_body=search_body
             )
             
-            subscriber_account_number = self._parse_account_search(search_response)
+            subscriber_account_number = self._parse_account_search(search_response, target_imei=imei)
             
             if not subscriber_account_number:
                 raise IWSException(
