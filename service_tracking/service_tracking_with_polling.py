@@ -77,7 +77,9 @@ class ServiceRequest:
                  completed_at: Optional[datetime] = None,
                  error_message: Optional[str] = None,
                  plan_name: Optional[str] = None,
-                 account_number: Optional[str] = None):
+                 account_number: Optional[str] = None,
+                 reason: Optional[str] = None,
+                 new_plan_id: Optional[str] = None):
         
         self.request_id = request_id
         self.customer_id = customer_id
@@ -92,6 +94,8 @@ class ServiceRequest:
         self.error_message = error_message
         self.plan_name = plan_name
         self.account_number = account_number
+        self.reason = reason
+        self.new_plan_id = new_plan_id
     
     def to_dict(self) -> Dict:
         """轉換為字典"""
@@ -108,12 +112,14 @@ class ServiceRequest:
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'error_message': self.error_message,
             'plan_name': self.plan_name,
-            'account_number': self.account_number
+            'account_number': self.account_number,
+            'reason': self.reason,
+            'new_plan_id': self.new_plan_id
         }
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'ServiceRequest':
-        """从字典创建"""
+        """從字典創建"""
         return cls(
             request_id=data['request_id'],
             customer_id=data['customer_id'],
@@ -127,7 +133,9 @@ class ServiceRequest:
             completed_at=datetime.fromisoformat(data['completed_at']) if data.get('completed_at') else None,
             error_message=data.get('error_message'),
             plan_name=data.get('plan_name'),
-            account_number=data.get('account_number')
+            account_number=data.get('account_number'),
+            reason=data.get('reason'),
+            new_plan_id=data.get('new_plan_id')
         )
 
 
@@ -343,95 +351,166 @@ def get_status_badge(status: str) -> str:
     """
 
 
-def render_assistant_page(store: RequestStore):
-    """渲染助理頁面"""
+def render_assistant_page(store: RequestStore, gateway=None):
+    """
+    渲染助理頁面（包含財務核准流程）
     
-    st.title("📋 服務請求追蹤")
+    Args:
+        store: 請求儲存
+        gateway: IWS Gateway 實例（用於核准後提交）
+    """
     
-    # 顶部信息栏
-    col1, col2, col3 = st.columns([2, 1, 1])
+    st.title("👨‍💼 助理工作台")
     
-    with col1:
-        st.markdown(f"**目前時間**: {get_current_taipei_time()} (台灣時間)")
-        st.caption("每3分钟自动查詢待處理請求的狀態")
+    # 標籤頁
+    tab1, tab2 = st.tabs(["📋 待核准請求", "🔍 已提交請求追蹤"])
     
-    with col2:
-        if st.button("🔄 立即刷新"):
-            st.rerun()
+    # ========== 標籤1：待核准請求 ==========
+    with tab1:
+        st.subheader("📋 待核准的服務請求")
+        st.info("客戶提交的請求會顯示在此處，請確認後提交給 Iridium")
+        
+        # 獲取待核准請求
+        all_requests = store.get_all()
+        pending_approval = [r for r in all_requests if r['status'] == 'PENDING_APPROVAL']
+        
+        if not pending_approval:
+            st.success("✅ 目前沒有待核准的請求")
+        else:
+            st.warning(f"⚠️ 有 {len(pending_approval)} 個請求等待核准")
+            
+            # 顯示每個待核准請求
+            for idx, req_dict in enumerate(pending_approval):
+                with st.container():
+                    st.markdown(f"### 請求 #{idx + 1}")
+                    
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**客戶編號**: {req_dict['customer_id']}")
+                        st.write(f"**客戶名稱**: {req_dict['customer_name']}")
+                        st.write(f"**IMEI**: {req_dict['imei']}")
+                    
+                    with col2:
+                        operation_text = get_operation_text(req_dict['operation'])
+                        st.write(f"**需求類型**: {operation_text}")
+                        
+                        if req_dict['operation'] == 'update_plan' and req_dict.get('new_plan_id'):
+                            plan_text = {
+                                '763925991': 'SBD 0',
+                                '763924583': 'SBD 12',
+                                '763927911': 'SBD 17',
+                                '763925351': 'SBD 30'
+                            }.get(req_dict['new_plan_id'], req_dict['new_plan_id'])
+                            st.write(f"**新資費方案**: {plan_text}")
+                        
+                        if req_dict.get('reason'):
+                            st.write(f"**原因**: {req_dict['reason']}")
+                        
+                        submit_time = utc_to_taipei(req_dict['created_at'])
+                        st.write(f"**提交時間**: {submit_time}")
+                    
+                    with col3:
+                        # 確認提交按鈕
+                        if gateway and st.button(
+                            "✅ 確認提交給 IWS",
+                            key=f"approve_{req_dict['request_id']}",
+                            type="primary",
+                            use_container_width=True
+                        ):
+                            try:
+                                with st.spinner("正在提交給 Iridium..."):
+                                    result = approve_and_submit_to_iws(
+                                        gateway=gateway,
+                                        store=store,
+                                        request_id=req_dict['request_id'],
+                                        assistant_name='assistant001'
+                                    )
+                                
+                                st.success(result['message'])
+                                st.balloons()
+                                time.sleep(1)
+                                st.rerun()
+                            
+                            except Exception as e:
+                                st.error(f"❌ 提交失敗: {str(e)}")
+                        
+                        if not gateway:
+                            st.warning("⚠️ IWS Gateway 未初始化")
+                    
+                    st.markdown("---")
     
-    with col3:
-        auto_refresh = st.toggle("自动刷新頁面", value=False)
-        if auto_refresh:
-            time.sleep(30)
-            st.rerun()
+    # ========== 標籤2：已提交請求追蹤 ==========
+    with tab2:
+        st.subheader("🔍 已提交請求狀態追蹤")
+        st.caption("顯示已提交給 Iridium 的請求及其狀態")
+        
+        # 獲取已提交的請求（排除 PENDING_APPROVAL）
+        submitted_requests = [r for r in all_requests if r['status'] != 'PENDING_APPROVAL']
+        pending_requests = [r for r in submitted_requests if r['status'] in ['SUBMITTED', 'PENDING', 'WORKING']]
+        completed = [r for r in submitted_requests if r['status'] == 'DONE']
+        failed = [r for r in submitted_requests if r['status'] == 'ERROR']
+        
+        # 統計卡片
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("總已提交", len(submitted_requests))
+        
+        with col2:
+            st.metric("處理中", len(pending_requests))
+        
+        with col3:
+            st.metric("已完成", len(completed))
+        
+        with col4:
+            st.metric("失敗", len(failed))
+        
+        st.markdown("---")
+        
+        # 篩選器
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col1:
+            filter_status = st.multiselect(
+                "篩選狀態",
+                options=['SUBMITTED', 'PENDING', 'WORKING', 'DONE', 'ERROR'],
+                default=['SUBMITTED', 'PENDING', 'WORKING']
+            )
+        
+        with col2:
+            filter_operation = st.multiselect(
+                "篩選操作",
+                options=['resume', 'suspend', 'deactivate', 'update_plan'],
+                format_func=get_operation_text
+            )
+        
+        with col3:
+            search_customer = st.text_input("搜尋客戶編號或名稱")
+        
+        # 應用篩選
+        filtered = submitted_requests
+        
+        if filter_status:
+            filtered = [r for r in filtered if r['status'] in filter_status]
+        
+        if filter_operation:
+            filtered = [r for r in filtered if r['operation'] in filter_operation]
+        
+        if search_customer:
+            filtered = [r for r in filtered if 
+                       search_customer.lower() in r['customer_id'].lower() or
+                       search_customer.lower() in r['customer_name'].lower()]
     
-    st.markdown("---")
-    
-    # 统计卡片
-    all_requests = store.get_all()
-    pending_requests = store.get_pending()
-    completed = [r for r in all_requests if r['status'] == 'DONE']
-    failed = [r for r in all_requests if r['status'] == 'ERROR']
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("總請求数", len(all_requests))
-    
-    with col2:
-        st.metric("待處理", len(pending_requests), 
-                 delta=f"{len(pending_requests)} 個正在查詢中" if pending_requests else None)
-    
-    with col3:
-        st.metric("已完成", len(completed))
-    
-    with col4:
-        st.metric("失敗", len(failed))
-    
-    st.markdown("---")
-    
-    # 篩選器
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        filter_status = st.multiselect(
-            "篩選狀態",
-            options=['SUBMITTED', 'PENDING', 'WORKING', 'DONE', 'ERROR'],
-            default=['PENDING', 'WORKING']
-        )
-    
-    with col2:
-        filter_operation = st.multiselect(
-            "篩選操作",
-            options=['resume', 'suspend', 'deactivate', 'update_plan', 'activate'],
-            format_func=get_operation_text
-        )
-    
-    with col3:
-        search_customer = st.text_input("搜索客户编号或名称")
-    
-    # 顯示請求列表（表格形式）
+    # 顯示請求列表（保留原有的顯示邏輯）
     st.markdown("### 📊 服務請求列表")
     
     if not all_requests:
-        st.info("📭 暂无服務請求")
+        st.info("📭 暫無服務請求")
         return
     
-    # 篩選
-    filtered = all_requests
-    
-    if filter_status:
-        filtered = [r for r in filtered if r['status'] in filter_status]
-    
-    if filter_operation:
-        filtered = [r for r in filtered if r['operation'] in filter_operation]
-    
-    if search_customer:
-        filtered = [
-            r for r in filtered
-            if search_customer.lower() in r['customer_id'].lower() or
-               search_customer.lower() in r['customer_name'].lower()
-        ]
+    # 篩選（此變數已在上面定義，這裡是為了相容）
+    # filtered = all_requests
     
     if not filtered:
         st.info("🔍 没有符合篩選条件的請求")
@@ -537,66 +616,44 @@ def submit_service_request(gateway,
                           operation: str,
                           **kwargs) -> Dict:
     """
-    提交服務請求
+    提交服務請求（客戶頁面）
+    
+    重要：此方法只創建請求記錄，不呼叫 IWS API
+    需要由助理在助理頁面確認後才會呼叫 IWS API
     
     Args:
-        gateway: IWS Gateway 實例
+        gateway: IWS Gateway 實例（不在此使用）
         store: 請求儲存
-        customer_id: 客户编号
-        customer_name: 客户名称
+        customer_id: 客戶編號
+        customer_name: 客戶名稱
         imei: IMEI
-        operation: 操作类型 (resume/suspend/deactivate/update_plan)
-        **kwargs: 其他参数
+        operation: 操作類型 (resume/suspend/deactivate/update_plan)
+        **kwargs: 其他參數
     
     Returns:
-        Dict: 請求结果
+        Dict: 請求結果
     """
     
     # 生成請求ID
     request_id = f"REQ-{int(time.time())}"
     
-    # 先查找帳号
-    search_result = gateway.search_account(imei)
-    if not search_result['found']:
-        raise Exception(f"未找到 IMEI {imei} 对應的帳号")
-    
-    account_number = search_result['subscriber_account_number']
-    current_status = search_result.get('status', 'UNKNOWN')
-    
-    # 根據操作類型調用不同的 API
-    if operation == 'resume':
-        api_result = gateway.resume_subscriber(imei=imei, reason=kwargs.get('reason', '恢復設備'))
-    elif operation == 'suspend':
-        api_result = gateway.suspend_subscriber(imei=imei, reason=kwargs.get('reason', '暫停設備'))
-    elif operation == 'deactivate':
-        api_result = gateway.deactivate_subscriber(imei=imei, reason=kwargs.get('reason', '註銷設備'))
-    elif operation == 'update_plan':
-        # 智慧處理：如果帳號是 SUSPENDED，先恢復再更新資費
-        if current_status == 'SUSPENDED':
-            print(f"[提示] 帳號目前是暫停狀態，將先恢復再更新資費")
-            gateway.resume_subscriber(imei=imei, reason='變更資費前自動恢復')
-            # 等待一小段時間讓恢復操作生效
-            time.sleep(2)
-        
-        # 更新資費
-        api_result = gateway.update_subscriber_plan(
-            imei=imei,
-            new_plan_id=kwargs.get('new_plan_id')
-        )
-    else:
-        raise ValueError(f"不支援的操作類型: {operation}")
-    
-    # 创建請求記錄
+    # 創建請求記錄（狀態：PENDING_APPROVAL）
     request = ServiceRequest(
         request_id=request_id,
         customer_id=customer_id,
         customer_name=customer_name,
         imei=imei,
         operation=operation,
-        transaction_id=api_result.get('transaction_id'),
-        status='SUBMITTED',
-        account_number=account_number
+        transaction_id=None,  # 尚未提交給 IWS
+        status='PENDING_APPROVAL',  # 等待助理核准
+        account_number=None,  # 暫時未知
+        plan_name=kwargs.get('new_plan_id') if operation == 'update_plan' else None
     )
+    
+    # 儲存操作原因和其他參數
+    request.reason = kwargs.get('reason', '')
+    if operation == 'update_plan':
+        request.new_plan_id = kwargs.get('new_plan_id')
     
     # 保存到儲存
     store.add(request)
@@ -604,9 +661,130 @@ def submit_service_request(gateway,
     return {
         'success': True,
         'request_id': request_id,
-        'transaction_id': api_result.get('transaction_id'),
-        'message': f'✅ 已正确傳递要求给 Iridium\n狀態: 🔄 正在等待回馈中'
+        'transaction_id': None,  # 尚未提交
+        'message': f'✅ 請求已提交\n📋 狀態: 等待助理確認\n🔔 請通知助理在助理頁面確認此請求'
     }
+
+
+def approve_and_submit_to_iws(gateway,
+                               store: RequestStore,
+                               request_id: str,
+                               assistant_name: str) -> Dict:
+    """
+    核准請求並提交給 IWS（助理頁面）
+    
+    此方法由助理在助理頁面呼叫，負責：
+    1. 查找帳號
+    2. 呼叫對應的 IWS API
+    3. 更新請求狀態
+    4. 返回結果
+    
+    Args:
+        gateway: IWS Gateway 實例
+        store: 請求儲存
+        request_id: 請求ID
+        assistant_name: 助理名稱
+    
+    Returns:
+        Dict: 提交結果
+    """
+    
+    # 獲取請求
+    request = store.get(request_id)
+    if not request:
+        raise Exception(f"未找到請求: {request_id}")
+    
+    # 檢查狀態
+    if request.status != 'PENDING_APPROVAL':
+        raise Exception(f"請求狀態不正確: {request.status}，應為 PENDING_APPROVAL")
+    
+    try:
+        # 步驟 1：查找帳號
+        print(f"\n[助理確認] 正在查找帳號...")
+        search_result = gateway.search_account(request.imei)
+        if not search_result['found']:
+            raise Exception(f"未找到 IMEI {request.imei} 對應的帳號")
+        
+        account_number = search_result['subscriber_account_number']
+        current_status = search_result.get('status', 'UNKNOWN')
+        
+        # 更新帳號資訊
+        request.account_number = account_number
+        
+        # 步驟 2：根據操作類型呼叫 IWS API
+        print(f"[助理確認] 正在提交給 IWS...")
+        print(f"  操作: {request.operation}")
+        print(f"  IMEI: {request.imei}")
+        print(f"  帳號: {account_number}")
+        print(f"  目前狀態: {current_status}")
+        
+        if request.operation == 'resume':
+            api_result = gateway.resume_subscriber(
+                imei=request.imei,
+                reason=request.reason or '恢復設備'
+            )
+        
+        elif request.operation == 'suspend':
+            # 檢查是否已經是 SUSPENDED
+            if current_status == 'SUSPENDED':
+                raise Exception(f"帳號已經是暫停狀態，無需再次暫停")
+            api_result = gateway.suspend_subscriber(
+                imei=request.imei,
+                reason=request.reason or '暫停設備'
+            )
+        
+        elif request.operation == 'deactivate':
+            # 檢查是否已經是 DEACTIVATED
+            if current_status == 'DEACTIVATED':
+                raise Exception(f"帳號已經是註銷狀態，無需再次註銷")
+            api_result = gateway.deactivate_subscriber(
+                imei=request.imei,
+                reason=request.reason or '註銷設備'
+            )
+        
+        elif request.operation == 'update_plan':
+            # 智慧處理：如果帳號是 SUSPENDED，先恢復
+            if current_status == 'SUSPENDED':
+                print(f"[提示] 帳號目前是暫停狀態，將先恢復再更新資費")
+                gateway.resume_subscriber(
+                    imei=request.imei,
+                    reason='變更資費前自動恢復'
+                )
+                time.sleep(2)  # 等待恢復生效
+            
+            # 更新資費
+            api_result = gateway.update_subscriber_plan(
+                imei=request.imei,
+                new_plan_id=request.new_plan_id
+            )
+        
+        else:
+            raise ValueError(f"不支援的操作類型: {request.operation}")
+        
+        # 步驟 3：更新請求狀態
+        request.transaction_id = api_result.get('transaction_id')
+        request.status = 'SUBMITTED'  # 已提交給 IWS
+        request.updated_at = datetime.now(timezone.utc)
+        store.update(request_id, request.to_dict())
+        
+        print(f"[助理確認] ✅ 已成功提交給 IWS")
+        print(f"  Transaction ID: {request.transaction_id}")
+        
+        return {
+            'success': True,
+            'request_id': request_id,
+            'transaction_id': request.transaction_id,
+            'message': f'✅ 已提交給 Iridium\n🔄 正在等待回饋中\n📋 Transaction ID: {request.transaction_id}'
+        }
+    
+    except Exception as e:
+        # 更新為錯誤狀態
+        request.status = 'ERROR'
+        request.error_message = str(e)
+        request.updated_at = datetime.now(timezone.utc)
+        store.update(request_id, request.to_dict())
+        
+        raise Exception(f"提交失敗: {str(e)}")
 
 
 # ========== 主程序示例 ==========

@@ -316,7 +316,8 @@ def main():
         render_customer_view()
     else:
         # 助理頁面 - 使用服務追蹤系統的完整 UI
-        render_assistant_page(st.session_state.request_store)
+        # 傳遞 gateway 以便助理確認後提交給 IWS
+        render_assistant_page(st.session_state.request_store, st.session_state.gateway)
 
 
 if __name__ == "__main__":
