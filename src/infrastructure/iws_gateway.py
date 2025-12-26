@@ -562,16 +562,44 @@ class IWSGateway:
             print(f"{'='*60}\n")
             
             if response.status_code != 200:
-                error_details = [
-                    f"HTTP {response.status_code}: {response.reason}",
-                    f"Endpoint: {self.endpoint}",
-                    f"Action: {soap_action}",
-                ]
+                error_details = []
+                
+                # 根據狀態碼提供更詳細的說明
+                if response.status_code == 500:
+                    error_details.append("⚠️  IWS 伺服器錯誤 (HTTP 500)")
+                    error_details.append("")
+                    error_details.append("這是立即回應的錯誤，不是等待中。")
+                    error_details.append("")
+                    error_details.append("可能原因：")
+                    error_details.append("1. 帳號狀態不允許此操作")
+                    error_details.append("2. IMEI 不存在或無效")
+                    error_details.append("3. 請求參數不符合 IWS 要求")
+                    error_details.append("")
+                    error_details.append("技術詳情：")
+                    error_details.append(f"  端點: {self.endpoint}")
+                    error_details.append(f"  操作: {soap_action}")
+                    error_details.append(f"  狀態碼: {response.status_code}")
+                else:
+                    error_details.append(f"HTTP {response.status_code}: {response.reason}")
+                    error_details.append(f"Endpoint: {self.endpoint}")
+                    error_details.append(f"Action: {soap_action}")
                 
                 if 'X-Error-Info' in response.headers:
                     error_details.append(f"X-Error-Info: {response.headers['X-Error-Info']}")
                 if 'X-Error-Code' in response.headers:
                     error_details.append(f"X-Error-Code: {response.headers['X-Error-Code']}")
+                
+                # 嘗試從回應中提取更多錯誤信息
+                try:
+                    root = ET.fromstring(response.text)
+                    fault = root.find('.//soap:Fault', self.NAMESPACES) or root.find('.//Fault')
+                    if fault is not None:
+                        faultstring = fault.find('.//faultstring')
+                        if faultstring is not None and faultstring.text:
+                            error_details.append("")
+                            error_details.append(f"IWS 錯誤訊息: {faultstring.text}")
+                except:
+                    pass
                 
                 raise IWSException(
                     "\n".join(error_details),

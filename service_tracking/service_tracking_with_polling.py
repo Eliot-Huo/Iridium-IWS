@@ -433,7 +433,40 @@ def render_assistant_page(store: RequestStore, gateway=None):
                                 st.rerun()
                             
                             except Exception as e:
-                                st.error(f"❌ 提交失敗: {str(e)}")
+                                error_msg = str(e)
+                                st.error(f"❌ 提交失敗")
+                                
+                                # 判斷錯誤類型並顯示相應的說明
+                                if "HTTP 500" in error_msg or "500" in error_msg:
+                                    st.warning("""
+                                    ⚠️  **IWS 伺服器錯誤 (HTTP 500)**
+                                    
+                                    這是 **立即回應** 的錯誤，不是等待中。
+                                    
+                                    **可能原因**：
+                                    1. 帳號狀態不允許此操作
+                                    2. IMEI 不存在或無效
+                                    3. 請求參數不符合 IWS 要求
+                                    
+                                    **建議**：
+                                    - 確認 IMEI 是否正確
+                                    - 在 IWS 系統中確認設備狀態
+                                    - 查看下方詳細錯誤訊息
+                                    """)
+                                elif "未找到" in error_msg or "not found" in error_msg.lower():
+                                    st.warning("""
+                                    ⚠️  **找不到設備**
+                                    
+                                    IMEI 在 IWS 系統中不存在。
+                                    
+                                    **建議**：
+                                    - 確認 IMEI 輸入正確
+                                    - 確認設備已在 IWS 註冊
+                                    """)
+                                
+                                # 顯示詳細錯誤
+                                with st.expander("🔍 查看詳細錯誤訊息"):
+                                    st.code(error_msg)
                         
                         if not gateway:
                             st.warning("⚠️ IWS Gateway 未初始化")
@@ -701,9 +734,28 @@ def approve_and_submit_to_iws(gateway,
     try:
         # 步驟 1：查找帳號
         print(f"\n[助理確認] 正在查找帳號...")
-        search_result = gateway.search_account(request['imei'])
+        try:
+            search_result = gateway.search_account(request['imei'])
+        except Exception as search_error:
+            # 查找帳號失敗
+            raise Exception(
+                f"無法查找帳號（IMEI: {request['imei']}）\n\n"
+                f"錯誤原因：\n{str(search_error)}\n\n"
+                f"💡 建議：\n"
+                f"1. 確認 IMEI 是否正確\n"
+                f"2. 確認設備是否已在 IWS 註冊\n"
+                f"3. 檢查網路連線"
+            )
+        
         if not search_result['found']:
-            raise Exception(f"未找到 IMEI {request['imei']} 對應的帳號")
+            raise Exception(
+                f"未找到 IMEI {request['imei']} 對應的帳號\n\n"
+                f"💡 可能原因：\n"
+                f"1. IMEI 輸入錯誤\n"
+                f"2. 設備尚未在 IWS 系統中註冊\n"
+                f"3. 設備已被刪除\n\n"
+                f"建議：請在 IWS 系統中確認此 IMEI 是否存在"
+            )
         
         account_number = search_result['subscriber_account_number']
         current_status = search_result.get('status', 'UNKNOWN')
@@ -743,13 +795,30 @@ def approve_and_submit_to_iws(gateway,
             )
         
         elif request['operation'] == 'update_plan':
-            # 智慧處理：如果帳號是 SUSPENDED，先恢復
+            # SITEST 環境智慧處理：自動恢復後再變更資費
             if current_status == 'SUSPENDED':
-                print(f"[提示] 帳號目前是暫停狀態，將先恢復再更新資費")
+                print(f"\n{'='*60}")
+                print(f"[SITEST 環境提示] 帳號目前是暫停狀態")
+                print(f"{'='*60}")
+                print(f"")
+                print(f"💡 這是 SITEST 測試環境的特性：")
+                print(f"   • SITEST 環境與生產環境完全隔離")
+                print(f"   • SITEST 的數據是生產環境的快照")
+                print(f"   • 您在測試中修改的狀態會保留在 SITEST")
+                print(f"   • 生產環境可能是 ACTIVE，SITEST 可能是 SUSPENDED")
+                print(f"")
+                print(f"📋 根據 IWS 規範：")
+                print(f"   SUSPENDED 狀態無法執行 Account Update（變更資費）")
+                print(f"")
+                print(f"🔧 自動處理：")
+                print(f"   系統將先恢復為 ACTIVE，然後再變更資費")
+                print(f"{'='*60}\n")
+                
                 gateway.resume_subscriber(
                     imei=request['imei'],
-                    reason='變更資費前自動恢復'
+                    reason='變更資費前自動恢復（SITEST 環境）'
                 )
+                print(f"\n✅ 已自動恢復為 ACTIVE 狀態\n")
                 time.sleep(2)  # 等待恢復生效
             
             # 更新資費
