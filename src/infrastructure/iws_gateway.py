@@ -783,6 +783,23 @@ class IWSGateway:
                             if plan_elem is None:
                                 plan_elem = subscriber.find('.//{http://www.iridium.com/}planName')
                             
+                            # 扩展解析：添加更多字段
+                            activation_elem = subscriber.find('.//activationDate')
+                            if activation_elem is None:
+                                activation_elem = subscriber.find('.//{http://www.iridium.com/}activationDate')
+                            
+                            iccid_elem = subscriber.find('.//iccid')
+                            if iccid_elem is None:
+                                iccid_elem = subscriber.find('.//{http://www.iridium.com/}iccid')
+                            
+                            sp_ref_elem = subscriber.find('.//spReference')
+                            if sp_ref_elem is None:
+                                sp_ref_elem = subscriber.find('.//{http://www.iridium.com/}spReference')
+                            
+                            account_type_elem = subscriber.find('.//accountType')
+                            if account_type_elem is None:
+                                account_type_elem = subscriber.find('.//{http://www.iridium.com/}accountType')
+                            
                             if account_elem is not None and account_elem.text:
                                 account_number = account_elem.text.strip()
                                 status = status_elem.text.strip() if status_elem is not None and status_elem.text else 'UNKNOWN'
@@ -796,7 +813,11 @@ class IWSGateway:
                                 return {
                                     'accountNumber': account_number,
                                     'status': status,
-                                    'planName': plan_name
+                                    'planName': plan_name,
+                                    'activationDate': activation_elem.text.strip() if activation_elem is not None and activation_elem.text else None,
+                                    'iccid': iccid_elem.text.strip() if iccid_elem is not None and iccid_elem.text else None,
+                                    'spReference': sp_ref_elem.text.strip() if sp_ref_elem is not None and sp_ref_elem.text else None,
+                                    'accountType': account_type_elem.text.strip() if account_type_elem is not None and account_type_elem.text else None
                                 }
                 
                 print(f"[IWS] No subscriber found with IMEI: {target_imei}")
@@ -1008,6 +1029,10 @@ class IWSGateway:
                     'subscriber_account_number': subscriber_info['accountNumber'],
                     'status': subscriber_info['status'],
                     'plan_name': subscriber_info.get('planName'),
+                    'activation_date': subscriber_info.get('activationDate'),
+                    'iccid': subscriber_info.get('iccid'),
+                    'sp_reference': subscriber_info.get('spReference'),
+                    'account_type': subscriber_info.get('accountType'),
                     'imei': imei,
                     'timestamp': datetime.now(timezone.utc).isoformat()
                 }
@@ -1598,9 +1623,68 @@ class IWSGateway:
         if updated_elem is None:
             updated_elem = root.find('.//{http://www.iridium.com/}lastUpdated')
         
+        # ✅ 新增：解析 deliveryDetails (array)
+        destinations = []
+        delivery_details = root.findall('.//deliveryDetail')
+        if not delivery_details:
+            delivery_details = root.findall('.//{http://www.iridium.com/}deliveryDetail')
+        
+        for detail in delivery_details:
+            dest_elem = detail.find('.//destination')
+            if dest_elem is None:
+                dest_elem = detail.find('.//{http://www.iridium.com/}destination')
+            
+            method_elem = detail.find('.//deliveryMethod')
+            if method_elem is None:
+                method_elem = detail.find('.//{http://www.iridium.com/}deliveryMethod')
+            
+            geo_elem = detail.find('.//geoDataFlag')
+            if geo_elem is None:
+                geo_elem = detail.find('.//{http://www.iridium.com/}geoDataFlag')
+            
+            moack_elem = detail.find('.//moAckFlag')
+            if moack_elem is None:
+                moack_elem = detail.find('.//{http://www.iridium.com/}moAckFlag')
+            
+            if dest_elem is not None and dest_elem.text:
+                destinations.append({
+                    'destination': dest_elem.text.strip(),
+                    'method': method_elem.text.strip() if method_elem is not None and method_elem.text else 'N/A',
+                    'geo_data': geo_elem.text.strip() if geo_elem is not None and geo_elem.text else 'FALSE',
+                    'mo_ack': moack_elem.text.strip() if moack_elem is not None and moack_elem.text else 'FALSE'
+                })
+        
+        # ✅ 新增：解析 maritimeSafetyInfo
+        ring_alert = 'N/A'
+        ring_alert_elem = root.find('.//ringAlertsFlag')
+        if ring_alert_elem is None:
+            ring_alert_elem = root.find('.//{http://www.iridium.com/}ringAlertsFlag')
+        if ring_alert_elem is not None and ring_alert_elem.text:
+            ring_alert = ring_alert_elem.text.strip()
+        
+        # ✅ 新增：解析 homeGateway
+        home_gateway = 'N/A'
+        home_gateway_elem = root.find('.//homeGateway')
+        if home_gateway_elem is None:
+            home_gateway_elem = root.find('.//{http://www.iridium.com/}homeGateway')
+        if home_gateway_elem is not None and home_gateway_elem.text:
+            home_gateway = home_gateway_elem.text.strip()
+        
+        # ✅ 新增：解析 spReference
+        sp_reference = 'N/A'
+        sp_ref_elem = root.find('.//spReference')
+        if sp_ref_elem is None:
+            sp_ref_elem = root.find('.//{http://www.iridium.com/}spReference')
+        if sp_ref_elem is not None and sp_ref_elem.text:
+            sp_reference = sp_ref_elem.text.strip()
+        
         status = status_elem.text if status_elem is not None else 'UNKNOWN'
         
         print(f"[IWS] 帳戶狀態: {status}")
+        if destinations:
+            print(f"[IWS] Destinations: {len(destinations)} 個")
+        if ring_alert != 'N/A':
+            print(f"[IWS] Ring Alert: {ring_alert}")
         
         return {
             'account_number': account_number,
@@ -1608,8 +1692,121 @@ class IWSGateway:
             'plan_name': plan_elem.text if plan_elem is not None else 'N/A',
             'imei': imei_elem.text if imei_elem is not None else 'N/A',
             'activation_date': activation_elem.text if activation_elem is not None else 'N/A',
-            'last_updated': updated_elem.text if updated_elem is not None else 'N/A'
+            'last_updated': updated_elem.text if updated_elem is not None else 'N/A',
+            # ✅ 新增字段
+            'destinations': destinations,
+            'ring_alert': ring_alert,
+            'home_gateway': home_gateway,
+            'sp_reference': sp_reference
         }
+    
+    def get_detailed_account_info(self, imei: str) -> Dict:
+        """
+        獲取設備的完整詳細信息（包括 Destination, Ring Alert, MO ACK, Geo）
+        
+        此方法組合使用 search_account 和 get_subscriber_account：
+        1. 先用 search_account 找到帳號和基本信息
+        2. 再用 get_subscriber_account 獲取詳細信息
+        3. 返回所有需求字段
+        
+        Args:
+            imei: 設備 IMEI
+            
+        Returns:
+            Dict: {
+                'found': bool,
+                'account_number': str,           # 合約代碼
+                'status': str,                   # 狀態
+                'plan_name': str,                # 現行資費
+                'activation_date': str,          # 開通日期
+                'imei': str,                     # IMEI
+                'destinations': [                # Destination (數組)
+                    {
+                        'destination': str,      # 目的地址
+                        'method': str,          # 投遞方法
+                        'geo_data': str,        # Geo 標志
+                        'mo_ack': str           # MO ACK 標志
+                    }
+                ],
+                'ring_alert': str,               # Ring Alert
+                'home_gateway': str,             # Home Gateway
+                'sp_reference': str,             # SP 參考代碼
+                'iccid': str,                    # ICCID
+                'account_type': str              # 帳號類型
+            }
+        """
+        print(f"\n{'='*60}")
+        print("[IWS] 獲取設備完整詳細信息...")
+        print(f"IMEI: {imei}")
+        print('='*60)
+        
+        # 步驟 1：用 search_account 找到帳號
+        try:
+            search_result = self.search_account(imei)
+        except Exception as e:
+            print(f"[IWS] ❌ search_account 失敗: {e}")
+            return {
+                'found': False,
+                'error': f'Search failed: {str(e)}'
+            }
+        
+        if not search_result.get('found'):
+            print(f"[IWS] ❌ 找不到 IMEI: {imei}")
+            return {
+                'found': False,
+                'message': 'IMEI not found in IWS system'
+            }
+        
+        account_number = search_result['subscriber_account_number']
+        print(f"[IWS] ✅ 找到帳號: {account_number}")
+        
+        # 步驟 2：用 get_subscriber_account 獲取詳細信息
+        try:
+            detailed = self.get_subscriber_account(account_number)
+        except Exception as e:
+            print(f"[IWS] ⚠️  get_subscriber_account 失敗: {e}")
+            # 如果獲取詳細信息失敗，至少返回基本信息
+            return {
+                'found': True,
+                'account_number': account_number,
+                'status': search_result.get('status', 'UNKNOWN'),
+                'plan_name': search_result.get('plan_name', 'N/A'),
+                'activation_date': search_result.get('activation_date', 'N/A'),
+                'imei': imei,
+                'destinations': [],
+                'ring_alert': 'N/A',
+                'home_gateway': 'N/A',
+                'sp_reference': search_result.get('sp_reference', 'N/A'),
+                'iccid': search_result.get('iccid', 'N/A'),
+                'account_type': search_result.get('account_type', 'N/A'),
+                'error': f'Detailed info unavailable: {str(e)}'
+            }
+        
+        # 步驟 3：組合並返回完整信息
+        result = {
+            'found': True,
+            'account_number': account_number,
+            'status': detailed.get('status', 'UNKNOWN'),
+            'plan_name': detailed.get('plan_name', 'N/A'),
+            'activation_date': detailed.get('activation_date', 'N/A'),
+            'imei': imei,
+            'destinations': detailed.get('destinations', []),
+            'ring_alert': detailed.get('ring_alert', 'N/A'),
+            'home_gateway': detailed.get('home_gateway', 'N/A'),
+            'sp_reference': detailed.get('sp_reference', search_result.get('sp_reference', 'N/A')),
+            'iccid': search_result.get('iccid', 'N/A'),
+            'account_type': search_result.get('account_type', 'N/A'),
+            'last_updated': detailed.get('last_updated', 'N/A')
+        }
+        
+        print(f"[IWS] ✅ 完整信息獲取成功")
+        print(f"     - 狀態: {result['status']}")
+        print(f"     - 資費: {result['plan_name']}")
+        print(f"     - Destinations: {len(result['destinations'])} 個")
+        print(f"     - Ring Alert: {result['ring_alert']}")
+        print('='*60 + '\n')
+        
+        return result
 
 
 # ==================== 便利函數 ====================

@@ -535,79 +535,118 @@ def render_assistant_page(store: RequestStore, gateway=None):
                        search_customer.lower() in r['customer_id'].lower() or
                        search_customer.lower() in r['customer_name'].lower()]
     
-    # 顯示請求列表（保留原有的顯示邏輯）
+    # 显示请求列表
     st.markdown("### 📊 服務請求列表")
     
     if not all_requests:
         st.info("📭 暫無服務請求")
         return
     
-    # 篩選（此變數已在上面定義，這裡是為了相容）
-    # filtered = all_requests
-    
     if not filtered:
-        st.info("🔍 没有符合篩選条件的請求")
+        st.info("🔍 沒有符合篩選條件的請求")
         return
     
     # 按更新時間倒序
     filtered = sorted(filtered, key=lambda x: x.get('updated_at', ''), reverse=True)
     
-    # 构建表格資料
+    # 輔助函數：轉換狀態顯示
+    def get_status_display_text(status: str, transaction_id) -> str:
+        """轉換狀態為顯示文字"""
+        if status == 'DONE':
+            return '✅ 已完成'
+        elif status == 'ERROR':
+            return '❌ 錯誤'
+        elif status in ['SUBMITTED', 'PENDING', 'WORKING']:
+            return '🔄 處理中'
+        elif status == 'PENDING_APPROVAL':
+            return '⏳ 等待確認'
+        elif status == 'APPROVED':
+            return '✔️ 已核准'
+        else:
+            return '❓ 未知'
+    
+    # 輔助函數：判斷是否已申請
+    def is_submitted_display(transaction_id) -> str:
+        """判斷是否已提交給 IWS"""
+        return '✅ 是' if transaction_id and transaction_id != 'N/A' else '⏳ 否'
+    
+    # 輔助函數：格式化日期為台北時間
+    def format_completed_date(date_str) -> str:
+        """格式化完成日期"""
+        if not date_str or date_str == 'N/A':
+            return '-'
+        try:
+            return utc_to_taipei(date_str)
+        except:
+            return date_str
+    
+    # 構建表格資料（新的 5 個字段）
     table_data = []
     for req in filtered:
         table_data.append({
-            '客户编号': req['customer_id'],
-            '客户名称': req['customer_name'],
-            '需求名称': get_operation_text(req['operation']),
-            'IMEI': req['imei'],
-            '目前狀態': req['status'],
-            '提交時間': utc_to_taipei(req.get('created_at', '')),
-            '生效時間': utc_to_taipei(req.get('completed_at', '')) if req['status'] == 'DONE' else '',
-            'Transaction ID': req.get('transaction_id', 'N/A'),
-            '資費方案': req.get('plan_name', '') if req['status'] == 'DONE' else '',
-            '錯誤信息': req.get('error_message', '') if req['status'] == 'ERROR' else ''
+            '客戶名稱': req['customer_name'],
+            '請求ID': req['request_id'],
+            '已申請': is_submitted_display(req.get('transaction_id')),
+            '現況': get_status_display_text(req['status'], req.get('transaction_id')),
+            '完成日期': format_completed_date(req.get('completed_at'))
         })
     
-    # 顯示表格
+    # 顯示為表格
+    import pandas as pd
     df = pd.DataFrame(table_data)
     
-    # 使用自定义样式顯示表格
-    for i, row in df.iterrows():
-        with st.container():
-            # 狀態徽章
-            status_html = get_status_badge(filtered[i]['status'])
-            
-            # 卡片布局
-            col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-            
-            with col1:
-                st.markdown(f"**客户**: {row['客户编号']} - {row['客户名称']}")
-                st.caption(f"IMEI: {row['IMEI']}")
-            
-            with col2:
-                st.markdown(f"**需求**: {row['需求名称']}")
-                if row['資費方案']:
-                    st.caption(f"方案: {row['資費方案']}")
-            
-            with col3:
-                st.markdown("**時間**")
-                st.caption(f"提交: {row['提交時間']}")
-                if row['生效時間']:
-                    st.caption(f"✅ 生效: {row['生效時間']}")
-            
-            with col4:
-                st.markdown(status_html, unsafe_allow_html=True)
-            
-            # 顯示錯誤信息
-            if row['錯誤信息']:
-                st.error(f"❌ {row['錯誤信息']}")
-            
-            # Transaction ID（可展开）
-            with st.expander("查看详情"):
-                st.code(f"Transaction ID: {row['Transaction ID']}")
-                st.text(f"請求ID: {filtered[i]['request_id']}")
-            
-            st.markdown("---")
+    # 使用 streamlit 表格顯示
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            '客戶名稱': st.column_config.TextColumn('客戶名稱', width='medium'),
+            '請求ID': st.column_config.TextColumn('請求ID', width='large'),
+            '已申請': st.column_config.TextColumn('已申請 (IWS已收件)', width='small'),
+            '現況': st.column_config.TextColumn('現況', width='small'),
+            '完成日期': st.column_config.TextColumn('完成日期', width='medium')
+        }
+    )
+    
+    # 顯示詳細卡片（可選）
+    with st.expander("🔍 查看詳細資訊"):
+        for i, req in enumerate(filtered):
+            with st.container():
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**客戶**: {req['customer_name']}")
+                    st.caption(f"編號: {req['customer_id']}")
+                    st.caption(f"IMEI: {req['imei']}")
+                
+                with col2:
+                    operation_text = get_operation_text(req['operation'])
+                    st.markdown(f"**需求**: {operation_text}")
+                    if req.get('plan_name'):
+                        st.caption(f"方案: {req['plan_name']}")
+                    if req.get('reason'):
+                        st.caption(f"原因: {req['reason']}")
+                
+                with col3:
+                    st.markdown("**時間資訊**")
+                    st.caption(f"提交: {utc_to_taipei(req.get('created_at', ''))}")
+                    if req.get('completed_at'):
+                        st.caption(f"完成: {format_completed_date(req.get('completed_at'))}")
+                
+                with col4:
+                    status_html = get_status_badge(req['status'])
+                    st.markdown(status_html, unsafe_allow_html=True)
+                
+                # Transaction ID
+                if req.get('transaction_id'):
+                    st.caption(f"📋 Transaction ID: {req['transaction_id']}")
+                
+                # 錯誤信息
+                if req.get('error_message'):
+                    st.error(f"❌ {req['error_message']}")
+                
+                st.markdown("---")
     
     # 批量操作
     st.markdown("### 🔧 批量操作")

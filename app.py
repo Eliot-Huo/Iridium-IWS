@@ -193,15 +193,28 @@ def render_customer_view():
                 help="客戶姓名"
             )
             
-            imei = st.text_input(
-                "IMEI",
-                placeholder="請輸入15位IMEI號碼",
-                max_chars=15,
-                help="設備的 IMEI 號碼",
-                key="imei_input"
-            )
+            # IMEI 輸入與查詢按鈕
+            imei_col, btn_col = st.columns([3, 1])
+            with imei_col:
+                imei = st.text_input(
+                    "IMEI",
+                    placeholder="請輸入15位IMEI號碼",
+                    max_chars=15,
+                    help="設備的 IMEI 號碼",
+                    key="imei_input"
+                )
+            with btn_col:
+                st.write("")  # 對齊空白
+                st.write("")
+                query_detail_button = st.button(
+                    "🔍 查詢現況",
+                    use_container_width=True,
+                    type="secondary",
+                    disabled=(not imei or len(imei) != 15),
+                    help="查詢完整的設備詳細資訊"
+                )
             
-            # 即時查詢 IMEI 狀態
+            # 即時查詢 IMEI 狀態（簡化顯示）
             if imei and len(imei) == 15 and imei.isdigit():
                 try:
                     with st.spinner("正在查詢 IMEI 狀態..."):
@@ -212,6 +225,7 @@ def render_customer_view():
                         status = search_result.get('status', 'UNKNOWN')
                         plan_name = search_result.get('plan_name', '未知')
                         account_number = search_result.get('subscriber_account_number', 'N/A')
+                        activation_date = search_result.get('activation_date', 'N/A')
                         
                         # 根據狀態選擇顏色和圖示
                         status_config = {
@@ -222,27 +236,34 @@ def render_customer_view():
                         
                         config = status_config.get(status, {'emoji': '❓', 'color': 'gray', 'text': '未知狀態'})
                         
-                        # 使用 container 顯示狀態
+                        # 使用 container 顯示基本狀態
                         status_container = st.container()
                         with status_container:
                             st.markdown("---")
-                            st.markdown("#### 📋 設備當前狀態")
+                            st.markdown("#### 📋 設備基本狀態")
                             
-                            # 使用 columns 顯示資訊
-                            info_col1, info_col2 = st.columns(2)
+                            # 使用 columns 顯示基本資訊
+                            info_col1, info_col2, info_col3 = st.columns(3)
                             
                             with info_col1:
                                 st.metric(
                                     label="狀態",
                                     value=f"{config['emoji']} {config['text']}"
                                 )
-                                st.caption(f"帳號: {account_number}")
                             
                             with info_col2:
                                 st.metric(
                                     label="資費方案",
                                     value=plan_name
                                 )
+                            
+                            with info_col3:
+                                st.metric(
+                                    label="開通日期",
+                                    value=activation_date if activation_date != 'N/A' else '未知'
+                                )
+                            
+                            st.caption(f"合約號碼: {account_number}")
                             
                             # 根據狀態顯示提示
                             if status == 'SUSPENDED':
@@ -258,7 +279,7 @@ def render_customer_view():
                                 )
                             elif status == 'ACTIVE':
                                 st.success(
-                                    "✅ 設備運作正常，可以執行所有操作。"
+                                    "✅ 設備運作正常，可以執行所有操作。點擊「🔍 查詢現況」查看完整資訊。"
                                 )
                             
                             st.markdown("---")
@@ -278,6 +299,66 @@ def render_customer_view():
                     )
             elif imei and len(imei) > 0 and len(imei) < 15:
                 st.caption(f"⏳ 請輸入完整的 15 位 IMEI（目前 {len(imei)} 位）")
+            
+            # 詳細查詢按鈕被點擊 - 顯示完整的 7 個字段
+            if query_detail_button:
+                with st.spinner("正在查詢完整資訊..."):
+                    try:
+                        detailed_result = st.session_state.gateway.get_detailed_account_info(imei)
+                        
+                        if detailed_result.get('found'):
+                            st.markdown("---")
+                            st.markdown("### 📊 設備完整資訊")
+                            
+                            # 分成三欄顯示
+                            col_a, col_b, col_c = st.columns(3)
+                            
+                            with col_a:
+                                st.metric("狀態", detailed_result.get('status', 'N/A'))
+                                st.metric("現行資費", detailed_result.get('plan_name', 'N/A'))
+                                st.metric("開通日期", detailed_result.get('activation_date', 'N/A'))
+                            
+                            with col_b:
+                                destinations = detailed_result.get('destinations', [])
+                                if destinations:
+                                    first_dest = destinations[0]
+                                    st.metric("Destination", first_dest.get('destination', 'N/A'))
+                                    st.metric("Geo", first_dest.get('geo_data', 'N/A'))
+                                    st.metric("MO ACK", first_dest.get('mo_ack', 'N/A'))
+                                else:
+                                    st.metric("Destination", 'N/A')
+                                    st.metric("Geo", 'N/A')
+                                    st.metric("MO ACK", 'N/A')
+                            
+                            with col_c:
+                                st.metric("Ring Alert", detailed_result.get('ring_alert', 'N/A'))
+                                st.metric("合約代碼", detailed_result.get('account_number', 'N/A'))
+                                st.metric("Home Gateway", detailed_result.get('home_gateway', 'N/A'))
+                            
+                            # 如果有多個 destinations，顯示所有
+                            if len(destinations) > 1:
+                                st.markdown("#### 📡 所有 Destinations")
+                                for i, dest in enumerate(destinations, 1):
+                                    with st.expander(f"Destination {i}: {dest.get('destination', 'N/A')}"):
+                                        st.write(f"**投遞方法**: {dest.get('method', 'N/A')}")
+                                        st.write(f"**Geo Data**: {dest.get('geo_data', 'N/A')}")
+                                        st.write(f"**MO ACK**: {dest.get('mo_ack', 'N/A')}")
+                            
+                            # 額外資訊
+                            with st.expander("📋 其他資訊"):
+                                st.write(f"**ICCID**: {detailed_result.get('iccid', 'N/A')}")
+                                st.write(f"**SP Reference**: {detailed_result.get('sp_reference', 'N/A')}")
+                                st.write(f"**Account Type**: {detailed_result.get('account_type', 'N/A')}")
+                                st.write(f"**Last Updated**: {detailed_result.get('last_updated', 'N/A')}")
+                            
+                            st.markdown("---")
+                            st.success("✅ 完整資訊查詢成功！")
+                        else:
+                            st.error(f"❌ 無法獲取詳細資訊: {detailed_result.get('message', '未知錯誤')}")
+                    
+                    except Exception as e:
+                        st.error(f"❌ 查詢失敗: {str(e)}")
+
         
         with col2:
             operation = st.selectbox(
