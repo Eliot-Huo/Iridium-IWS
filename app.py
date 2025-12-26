@@ -69,6 +69,8 @@ def init_session_state():
     if 'request_store' not in st.session_state:
         st.session_state.request_store = RequestStore('service_requests.json')
     
+    # 🍎 Safari 兼容性：完全禁用后台轮询
+    # 改为手动刷新模式，避免后台线程导致的性能问题
     if 'poller' not in st.session_state and st.session_state.gateway_initialized:
         try:
             st.session_state.poller = BackgroundPoller(
@@ -76,11 +78,11 @@ def init_session_state():
                 store=st.session_state.request_store
             )
             
-            # 初始化 polling_enabled 状态（默认启用）
+            # 默认禁用后台轮询（Safari 兼容性）
             if 'polling_enabled' not in st.session_state:
-                st.session_state.polling_enabled = True
+                st.session_state.polling_enabled = False  # 改为默认禁用
             
-            # 只有在启用时才启动
+            # 只有用户明确启用时才启动
             if st.session_state.polling_enabled:
                 st.session_state.poller.start()
                 st.session_state.poller_running = True
@@ -152,14 +154,14 @@ def render_sidebar():
         
         polling_enabled = st.checkbox(
             "启用后台自动轮询",
-            value=st.session_state.get('polling_enabled', True),
-            help="关闭可提高 Safari 浏览器性能。关闭后请使用手动刷新功能。",
+            value=st.session_state.get('polling_enabled', False),  # 默认禁用
+            help="默认关闭以提升所有浏览器性能。启用后每3分钟自动查询一次状态。",
             key="polling_toggle"
         )
         
         # 处理轮询状态变化
         if 'polling_enabled' not in st.session_state:
-            st.session_state.polling_enabled = True
+            st.session_state.polling_enabled = False  # 默认禁用
         
         if polling_enabled != st.session_state.polling_enabled:
             st.session_state.polling_enabled = polling_enabled
@@ -186,8 +188,13 @@ def render_sidebar():
                 
                 st.rerun()
         
-        # Safari 提示
-        st.caption("💡 **提示**: Safari 用户建议关闭自动轮询")
+        # 状态提示
+        if st.session_state.get('poller_running', False):
+            st.success("🟢 自动轮询: 运行中（每3分钟）")
+        else:
+            st.info("🔵 手动刷新模式（推荐）")
+        
+        st.caption("💡 **建议**: 使用手动刷新模式以获得最佳性能")
 
         
         # 請求統計
@@ -443,45 +450,63 @@ def render_customer_view():
                 help="選擇要執行的操作"
             )
         
-        # 如果是變更資費，顯示方案選擇（移到外面，獨立顯示）
-        new_plan_id = None
-        if operation == 'update_plan':
-            st.markdown("---")
-            st.markdown("### 📋 選擇新資費方案")
-            st.info("💡 請選擇要變更的資費方案")
-            
-            # 定義方案資訊
-            plan_options = {
-                '763925991': {
-                    'name': 'SBD 0',
-                    'description': '基礎方案 - 0 則訊息/月'
-                },
-                '763924583': {
-                    'name': 'SBD 12',
-                    'description': '標準方案 - 12 則訊息/月'
-                },
-                '763927911': {
-                    'name': 'SBD 17',
-                    'description': '進階方案 - 17 則訊息/月'
-                },
-                '763925351': {
-                    'name': 'SBD 30',
-                    'description': '專業方案 - 30 則訊息/月'
-                }
+        # ========== 資費方案選擇（始終顯示，避免 Form 內條件渲染問題） ==========
+        st.markdown("---")
+        st.markdown("### 📋 資費方案選擇")
+        
+        # 定義方案資訊
+        plan_options = {
+            '763925991': {
+                'name': 'SBD 0',
+                'description': '基礎方案 - 0 則訊息/月',
+                'monthly_fee': '$0'
+            },
+            '763924583': {
+                'name': 'SBD 12',
+                'description': '標準方案 - 12 則訊息/月',
+                'monthly_fee': '$30'
+            },
+            '763927911': {
+                'name': 'SBD 17',
+                'description': '進階方案 - 17 則訊息/月',
+                'monthly_fee': '$45'
+            },
+            '763925351': {
+                'name': 'SBD 30',
+                'description': '專業方案 - 30 則訊息/月',
+                'monthly_fee': '$60'
             }
+        }
+        
+        # 显示提示
+        if operation == 'update_plan':
+            st.info("💡 請選擇要變更的資費方案")
+        else:
+            st.warning("⚠️ 只有選擇「變更資費方案」操作時才需要選擇資費")
+        
+        # 资费选择（始终显示）
+        new_plan_id = st.selectbox(
+            "選擇新資費方案" + (" *" if operation == 'update_plan' else " (當前操作不需要)"),
+            options=list(plan_options.keys()),
+            format_func=lambda x: f"{plan_options[x]['name']} - {plan_options[x]['description']} ({plan_options[x]['monthly_fee']})",
+            help="選擇要變更的資費方案，變更後會立即生效",
+            disabled=(operation != 'update_plan')  # 非變更資費時禁用
+        )
+        
+        # 顯示選擇的資費詳情
+        if operation == 'update_plan' and new_plan_id:
+            selected_plan = plan_options[new_plan_id]
+            col_a, col_b, col_c = st.columns(3)
             
-            new_plan_id = st.selectbox(
-                "選擇新資費方案 *",
-                options=list(plan_options.keys()),
-                format_func=lambda x: f"{plan_options[x]['name']} ({plan_options[x]['description']})",
-                help="選擇要變更的資費方案，變更後會立即生效"
-            )
+            with col_a:
+                st.metric("方案名稱", selected_plan['name'])
             
-            # 顯示目前選擇
-            if new_plan_id:
-                st.success(f"✅ 已選擇：{plan_options[new_plan_id]['name']} - {plan_options[new_plan_id]['description']}")
+            with col_b:
+                st.metric("訊息數量", selected_plan['description'].split('-')[1].strip())
             
-            st.markdown("---")
+            with col_c:
+                st.metric("月費", selected_plan['monthly_fee'])
+
         
         reason = st.text_area(
             "操作原因 *",
