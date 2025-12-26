@@ -689,100 +689,100 @@ def approve_and_submit_to_iws(gateway,
         Dict: 提交結果
     """
     
-    # 獲取請求
+    # 獲取請求（返回 Dict）
     request = store.get(request_id)
     if not request:
         raise Exception(f"未找到請求: {request_id}")
     
     # 檢查狀態
-    if request.status != 'PENDING_APPROVAL':
-        raise Exception(f"請求狀態不正確: {request.status}，應為 PENDING_APPROVAL")
+    if request['status'] != 'PENDING_APPROVAL':
+        raise Exception(f"請求狀態不正確: {request['status']}，應為 PENDING_APPROVAL")
     
     try:
         # 步驟 1：查找帳號
         print(f"\n[助理確認] 正在查找帳號...")
-        search_result = gateway.search_account(request.imei)
+        search_result = gateway.search_account(request['imei'])
         if not search_result['found']:
-            raise Exception(f"未找到 IMEI {request.imei} 對應的帳號")
+            raise Exception(f"未找到 IMEI {request['imei']} 對應的帳號")
         
         account_number = search_result['subscriber_account_number']
         current_status = search_result.get('status', 'UNKNOWN')
         
         # 更新帳號資訊
-        request.account_number = account_number
+        request['account_number'] = account_number
         
         # 步驟 2：根據操作類型呼叫 IWS API
         print(f"[助理確認] 正在提交給 IWS...")
-        print(f"  操作: {request.operation}")
-        print(f"  IMEI: {request.imei}")
+        print(f"  操作: {request['operation']}")
+        print(f"  IMEI: {request['imei']}")
         print(f"  帳號: {account_number}")
         print(f"  目前狀態: {current_status}")
         
-        if request.operation == 'resume':
+        if request['operation'] == 'resume':
             api_result = gateway.resume_subscriber(
-                imei=request.imei,
-                reason=request.reason or '恢復設備'
+                imei=request['imei'],
+                reason=request.get('reason') or '恢復設備'
             )
         
-        elif request.operation == 'suspend':
+        elif request['operation'] == 'suspend':
             # 檢查是否已經是 SUSPENDED
             if current_status == 'SUSPENDED':
                 raise Exception(f"帳號已經是暫停狀態，無需再次暫停")
             api_result = gateway.suspend_subscriber(
-                imei=request.imei,
-                reason=request.reason or '暫停設備'
+                imei=request['imei'],
+                reason=request.get('reason') or '暫停設備'
             )
         
-        elif request.operation == 'deactivate':
+        elif request['operation'] == 'deactivate':
             # 檢查是否已經是 DEACTIVATED
             if current_status == 'DEACTIVATED':
                 raise Exception(f"帳號已經是註銷狀態，無需再次註銷")
             api_result = gateway.deactivate_subscriber(
-                imei=request.imei,
-                reason=request.reason or '註銷設備'
+                imei=request['imei'],
+                reason=request.get('reason') or '註銷設備'
             )
         
-        elif request.operation == 'update_plan':
+        elif request['operation'] == 'update_plan':
             # 智慧處理：如果帳號是 SUSPENDED，先恢復
             if current_status == 'SUSPENDED':
                 print(f"[提示] 帳號目前是暫停狀態，將先恢復再更新資費")
                 gateway.resume_subscriber(
-                    imei=request.imei,
+                    imei=request['imei'],
                     reason='變更資費前自動恢復'
                 )
                 time.sleep(2)  # 等待恢復生效
             
             # 更新資費
             api_result = gateway.update_subscriber_plan(
-                imei=request.imei,
-                new_plan_id=request.new_plan_id
+                imei=request['imei'],
+                new_plan_id=request.get('new_plan_id')
             )
         
         else:
-            raise ValueError(f"不支援的操作類型: {request.operation}")
+            raise ValueError(f"不支援的操作類型: {request['operation']}")
         
         # 步驟 3：更新請求狀態
-        request.transaction_id = api_result.get('transaction_id')
-        request.status = 'SUBMITTED'  # 已提交給 IWS
-        request.updated_at = datetime.now(timezone.utc)
-        store.update(request_id, request.to_dict())
+        request['transaction_id'] = api_result.get('transaction_id')
+        request['status'] = 'SUBMITTED'  # 已提交給 IWS
+        request['updated_at'] = datetime.now(timezone.utc).isoformat()
+        store.update(request_id, request)
         
         print(f"[助理確認] ✅ 已成功提交給 IWS")
-        print(f"  Transaction ID: {request.transaction_id}")
+        print(f"  Transaction ID: {request['transaction_id']}")
         
         return {
             'success': True,
             'request_id': request_id,
-            'transaction_id': request.transaction_id,
-            'message': f'✅ 已提交給 Iridium\n🔄 正在等待回饋中\n📋 Transaction ID: {request.transaction_id}'
+            'transaction_id': request['transaction_id'],
+            'message': f'✅ 已提交給 Iridium\n🔄 正在等待回饋中\n📋 Transaction ID: {request["transaction_id"]}'
         }
     
     except Exception as e:
         # 更新為錯誤狀態
-        request.status = 'ERROR'
-        request.error_message = str(e)
-        request.updated_at = datetime.now(timezone.utc)
-        store.update(request_id, request.to_dict())
+        request['status'] = 'ERROR'
+        request['error_message'] = str(e)
+        request['updated_at'] = datetime.now(timezone.utc).isoformat()
+        store.update(request_id, request)
         
         raise Exception(f"提交失敗: {str(e)}")
 
