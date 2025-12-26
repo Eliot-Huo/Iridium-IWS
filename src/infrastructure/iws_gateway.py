@@ -1336,6 +1336,220 @@ class IWSGateway:
             raise
         except Exception as e:
             raise IWSException(f"Unexpected error during deactivation: {str(e)}")
+    
+    
+    # ==================== 異步操作查詢方法 ====================
+    
+    def get_queue_entry(self, transaction_id: str) -> Dict:
+        """
+        查詢隊列條目狀態（標準異步狀態查詢）
+        
+        這是 IWS 推薦的標準方式來追蹤異步操作的處理進度。
+        
+        Args:
+            transaction_id: 從 API 響應中獲取的 Transaction ID
+            
+        Returns:
+            Dict: {
+                'status': 'PENDING'/'WORKING'/'DONE'/'ERROR',
+                'transaction_id': 交易ID,
+                'operation': 操作類型,
+                'timestamp': 時間戳
+            }
+        """
+        print(f"\n[IWS] 查詢隊列狀態...")
+        print(f"Transaction ID: {transaction_id}")
+        
+        action_name = 'getQueueEntry'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        
+        body = f'''<tns:getQueueEntry xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <queueEntryId>{transaction_id}</queueEntryId>
+            </request>
+        </tns:getQueueEntry>'''
+        
+        response_xml = self._send_soap_request(
+            soap_action=action_name,
+            soap_body=body
+        )
+        
+        # 解析響應
+        root = ET.fromstring(response_xml)
+        
+        # 嘗試多種路徑查找狀態
+        status_elem = root.find('.//status')
+        if status_elem is None:
+            status_elem = root.find('.//{http://www.iridium.com/}status')
+        
+        operation_elem = root.find('.//operation')
+        if operation_elem is None:
+            operation_elem = root.find('.//{http://www.iridium.com/}operation')
+        
+        timestamp_elem = root.find('.//timestamp')
+        if timestamp_elem is None:
+            timestamp_elem = root.find('.//{http://www.iridium.com/}timestamp')
+        
+        status = status_elem.text if status_elem is not None else 'UNKNOWN'
+        
+        print(f"[IWS] 隊列狀態: {status}")
+        
+        return {
+            'status': status,
+            'transaction_id': transaction_id,
+            'operation': operation_elem.text if operation_elem is not None else 'N/A',
+            'timestamp': timestamp_elem.text if timestamp_elem is not None else 'N/A'
+        }
+    
+    
+    def get_iws_request(self, transaction_id: str) -> Dict:
+        """
+        獲取 IWS 請求詳情（用於錯誤診斷）
+        
+        當隊列狀態為 ERROR 時，使用此方法獲取詳細的錯誤信息。
+        
+        Args:
+            transaction_id: Transaction ID
+            
+        Returns:
+            Dict: {
+                'transaction_id': 交易ID,
+                'response': 原始SOAP響應,
+                'error_message': 錯誤信息,
+                'error_code': 錯誤代碼
+            }
+        """
+        print(f"\n[IWS] 獲取請求詳情...")
+        print(f"Transaction ID: {transaction_id}")
+        
+        action_name = 'getIwsRequest'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        
+        body = f'''<tns:getIwsRequest xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <requestId>{transaction_id}</requestId>
+            </request>
+        </tns:getIwsRequest>'''
+        
+        response_xml = self._send_soap_request(
+            soap_action=action_name,
+            soap_body=body
+        )
+        
+        # 解析響應
+        root = ET.fromstring(response_xml)
+        
+        response_elem = root.find('.//response')
+        if response_elem is None:
+            response_elem = root.find('.//{http://www.iridium.com/}response')
+        
+        error_elem = root.find('.//errorMessage')
+        if error_elem is None:
+            error_elem = root.find('.//{http://www.iridium.com/}errorMessage')
+        
+        error_code_elem = root.find('.//errorCode')
+        if error_code_elem is None:
+            error_code_elem = root.find('.//{http://www.iridium.com/}errorCode')
+        
+        error_message = error_elem.text if error_elem is not None else 'No error message'
+        
+        print(f"[IWS] 錯誤信息: {error_message}")
+        
+        return {
+            'transaction_id': transaction_id,
+            'response': response_elem.text if response_elem is not None else '',
+            'error_message': error_message,
+            'error_code': error_code_elem.text if error_code_elem is not None else 'N/A'
+        }
+    
+    
+    def get_subscriber_account(self, account_number: str) -> Dict:
+        """
+        獲取訂閱者帳戶詳細信息（用於最終驗證）
+        
+        在異步操作完成後，使用此方法驗證帳戶的最終狀態。
+        
+        Args:
+            account_number: 訂閱者帳號（例如 SUB-49059741895）
+            
+        Returns:
+            Dict: {
+                'account_number': 帳號,
+                'status': 帳戶狀態,
+                'plan_name': 費率方案,
+                'imei': IMEI,
+                'activation_date': 啟用日期,
+                'last_updated': 最後更新時間
+            }
+        """
+        print(f"\n[IWS] 獲取帳戶信息...")
+        print(f"Account: {account_number}")
+        
+        action_name = 'getSubscriberAccount'
+        timestamp = self._generate_timestamp()
+        signature = self._generate_signature(action_name, timestamp)
+        
+        body = f'''<tns:getSubscriberAccount xmlns:tns="{self.IWS_NS}">
+            <request>
+                <iwsUsername>{self.username}</iwsUsername>
+                <signature>{signature}</signature>
+                <serviceProviderAccountNumber>{self.sp_account}</serviceProviderAccountNumber>
+                <timestamp>{timestamp}</timestamp>
+                <subscriberAccountNumber>{account_number}</subscriberAccountNumber>
+            </request>
+        </tns:getSubscriberAccount>'''
+        
+        response_xml = self._send_soap_request(
+            soap_action=action_name,
+            soap_body=body
+        )
+        
+        # 解析響應
+        root = ET.fromstring(response_xml)
+        
+        # 查找帳戶信息
+        status_elem = root.find('.//accountStatus')
+        if status_elem is None:
+            status_elem = root.find('.//{http://www.iridium.com/}accountStatus')
+        
+        plan_elem = root.find('.//planName')
+        if plan_elem is None:
+            plan_elem = root.find('.//{http://www.iridium.com/}planName')
+        
+        imei_elem = root.find('.//imei')
+        if imei_elem is None:
+            imei_elem = root.find('.//{http://www.iridium.com/}imei')
+        
+        activation_elem = root.find('.//activationDate')
+        if activation_elem is None:
+            activation_elem = root.find('.//{http://www.iridium.com/}activationDate')
+        
+        updated_elem = root.find('.//lastUpdated')
+        if updated_elem is None:
+            updated_elem = root.find('.//{http://www.iridium.com/}lastUpdated')
+        
+        status = status_elem.text if status_elem is not None else 'UNKNOWN'
+        
+        print(f"[IWS] 帳戶狀態: {status}")
+        
+        return {
+            'account_number': account_number,
+            'status': status,
+            'plan_name': plan_elem.text if plan_elem is not None else 'N/A',
+            'imei': imei_elem.text if imei_elem is not None else 'N/A',
+            'activation_date': activation_elem.text if activation_elem is not None else 'N/A',
+            'last_updated': updated_elem.text if updated_elem is not None else 'N/A'
+        }
 
 
 # ==================== 便利函數 ====================

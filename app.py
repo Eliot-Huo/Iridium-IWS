@@ -1,365 +1,322 @@
 """
-SBD 管理系統 - Streamlit 主程式 v6.7
-Asset Management Edition - 資產管理專用版
+SBD 管理系统 - Streamlit 主程式 v6.12
+完整集成 IWS Gateway + 服务请求追踪系统
 """
 import streamlit as st
-from datetime import datetime
-from src.repositories.repo import InMemoryRepository
-from src.services.sbd_service import SBDService
-from src.services.cdr_service import CDRService
-from src.models.models import UserRole, RequestStatus, ActionType
-from src.config.constants import RATE_PLANS
+import sys
+from pathlib import Path
 
+# 添加项目路径
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
-# 頁面配置
-st.set_page_config(
-    page_title="SBD 資產管理系統",
-    page_icon="📡",
-    layout="wide"
+# 导入核心模块
+from src.infrastructure.iws_gateway import IWSGateway
+from src.models.models import UserRole
+
+# 导入服务追踪模块
+from service_tracking.service_tracking_with_polling import (
+    RequestStore,
+    BackgroundPoller,
+    submit_service_request,
+    render_assistant_page,
+    get_current_taipei_time,
+    get_operation_text
 )
 
+# ========== 页面配置 ==========
+
+st.set_page_config(
+    page_title="SBD 管理系统",
+    page_icon="📡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ========== 初始化 ==========
 
 def init_session_state():
     """初始化 Session State"""
-    if 'repository' not in st.session_state:
-        st.session_state.repository = InMemoryRepository()
     
-    if 'sbd_service' not in st.session_state:
-        st.session_state.sbd_service = SBDService(st.session_state.repository)
-    
+    # 用户角色
     if 'current_role' not in st.session_state:
         st.session_state.current_role = UserRole.CUSTOMER
     
     if 'current_username' not in st.session_state:
         st.session_state.current_username = 'customer001'
     
-    if 'sample_cdr_data' not in st.session_state:
-        # 模擬 CDR 資料
-        st.session_state.sample_cdr_data = [
-            '123456789012345,2025-01-15 10:30:00,120,0.0,voice,+886912345678,1.5',
-            '123456789012345,2025-01-15 14:20:00,60,2.5,data,,0.8',
-            '987654321098765,2025-01-15 16:45:00,90,0.0,sms,+886987654321,0.3'
-        ]
+    # IWS Gateway
+    if 'gateway' not in st.session_state:
+        try:
+            # 优先从 secrets 读取，否则使用默认值
+            username = st.secrets.get('IWS_USERNAME', 'IWSN3D')
+            password = st.secrets.get('IWS_PASSWORD', 'FvGr2({sE4V4TJ:')
+            sp_account = st.secrets.get('IWS_SP_ACCOUNT', '200883')
+            endpoint = st.secrets.get('IWS_ENDPOINT', 'https://iwstraining.iridium.com:8443/iws-current/iws')
+            
+            st.session_state.gateway = IWSGateway(
+                username=username,
+                password=password,
+                sp_account=sp_account,
+                endpoint=endpoint
+            )
+            st.session_state.gateway_initialized = True
+        except Exception as e:
+            st.session_state.gateway_initialized = False
+            st.session_state.gateway_error = str(e)
+    
+    # 服务追踪系统
+    if 'request_store' not in st.session_state:
+        st.session_state.request_store = RequestStore('service_requests.json')
+    
+    if 'poller' not in st.session_state and st.session_state.gateway_initialized:
+        try:
+            st.session_state.poller = BackgroundPoller(
+                gateway=st.session_state.gateway,
+                store=st.session_state.request_store
+            )
+            st.session_state.poller.start()
+            st.session_state.poller_running = True
+        except Exception as e:
+            st.session_state.poller_running = False
+            st.session_state.poller_error = str(e)
 
+
+# ========== 侧边栏 ==========
 
 def render_sidebar():
-    """渲染側邊欄"""
+    """渲染侧边栏"""
     with st.sidebar:
-        st.title("📡 SBD 資產管理系統")
+        st.title("📡 SBD 管理系统")
+        st.caption("v6.12 - 服务追踪版")
+        
         st.markdown("---")
         
-        # 身份驗證模擬
-        st.subheader("🔐 身份切換")
+        # 角色切换
+        st.subheader("🔐 身份切换")
         
         role_option = st.radio(
-            "選擇角色",
-            options=["客戶 (Customer)", "助理 (Assistant)"],
-            index=0 if st.session_state.current_role == UserRole.CUSTOMER else 1
+            "选择角色",
+            options=["客户 (Customer)", "助理 (Assistant)"],
+            index=0 if st.session_state.current_role == UserRole.CUSTOMER else 1,
+            help="切换不同的用户视角"
         )
         
-        if role_option == "客戶 (Customer)":
+        if role_option == "客户 (Customer)":
             st.session_state.current_role = UserRole.CUSTOMER
             st.session_state.current_username = 'customer001'
         else:
             st.session_state.current_role = UserRole.ASSISTANT
             st.session_state.current_username = 'assistant001'
         
-        st.info(f"當前身份: **{st.session_state.current_username}**")
+        st.info(f"当前身份: **{st.session_state.current_username}**")
         
         st.markdown("---")
         
-        # 系統資訊
-        st.subheader("📊 系統狀態")
-        total_requests = st.session_state.repository.count()
-        pending_count = len([r for r in st.session_state.repository.list_all_requests() 
-                            if r.status == RequestStatus.PENDING_FINANCE])
+        # 系统状态
+        st.subheader("📊 系统状态")
         
-        st.metric("總請求數", total_requests)
-        st.metric("待核准", pending_count)
-
-
-def render_cdr_monitor():
-    """渲染流量監視器"""
-    st.subheader("📈 通訊紀錄監視器")
-    
-    if st.session_state.sample_cdr_data:
-        records = CDRService.parse_multiple_lines(st.session_state.sample_cdr_data)
-        
-        if records:
-            # 建立顯示用的資料
-            display_data = []
-            for record in records:
-                display_data.append({
-                    'IMEI': record.imei,
-                    '時間 (台北)': record.get_formatted_time('%Y-%m-%d %H:%M:%S'),
-                    '類型': record.call_type,
-                    '時長 (秒)': record.duration_seconds,
-                    '數據 (MB)': record.data_mb,
-                    '目的地': record.destination or 'N/A',
-                    '費用 ($)': f'${record.cost:.2f}'
-                })
-            
-            st.dataframe(display_data, use_container_width=True)
-            
-            # 統計資訊
-            total_cost = CDRService.calculate_total_cost(records)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("總筆數", len(records))
-            with col2:
-                st.metric("總費用", f"${total_cost:.2f}")
-            with col3:
-                st.metric("平均費用", f"${total_cost/len(records):.2f}" if records else "$0.00")
+        # IWS Gateway 状态
+        if st.session_state.gateway_initialized:
+            st.success("✅ IWS Gateway")
         else:
-            st.info("無有效的通訊紀錄")
-    else:
-        st.info("暫無通訊紀錄")
+            st.error("❌ IWS Gateway")
+            if 'gateway_error' in st.session_state:
+                with st.expander("查看错误"):
+                    st.code(st.session_state.gateway_error)
+        
+        # 后台轮询服务状态
+        if st.session_state.get('poller_running', False):
+            st.success("✅ 后台轮询 (3分钟)")
+        else:
+            st.warning("⏸️ 后台轮询未运行")
+            if 'poller_error' in st.session_state:
+                with st.expander("查看错误"):
+                    st.code(st.session_state.poller_error)
+        
+        # 请求统计
+        if 'request_store' in st.session_state:
+            all_requests = st.session_state.request_store.get_all()
+            pending = st.session_state.request_store.get_pending()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("总请求", len(all_requests))
+            with col2:
+                st.metric("待处理", len(pending))
+        
+        st.markdown("---")
+        
+        # 当前时间
+        st.caption("**台湾时间**")
+        st.caption(get_current_taipei_time())
 
+
+# ========== 客户页面 ==========
 
 def render_customer_view():
-    """渲染客戶介面 - 資產管理專用版"""
-    st.header("👤 設備資產管理")
+    """渲染客户页面"""
+    st.header("👤 客户服务页面")
     
-    # IMEI 輸入（共用）
-    imei_input = st.text_input(
-        "IMEI 號碼",
-        placeholder="請輸入 15 位數字",
-        max_chars=15,
-        help="設備的唯一識別碼"
-    )
-    
-    # 功能選擇 Tabs
-    tab1, tab2, tab3 = st.tabs(["💱 變更費率", "⏸️ 暫停設備", "🔴 註銷設備"])
-    
-    # Tab 1: 變更費率
-    with tab1:
-        st.subheader("變更資費方案")
-        
-        # 獲取可用方案
-        available_plans = st.session_state.sbd_service.get_available_plans()
-        plan_options = list(available_plans.keys())
-        
-        selected_plan = st.selectbox(
-            "選擇新的資費方案",
-            options=plan_options,
-            help="選擇要變更的資費方案"
-        )
-        
-        # 顯示方案費用
-        if selected_plan:
-            plan_fee = available_plans[selected_plan]
-            st.info(f"💰 新方案月租費: **${plan_fee:.2f}**")
-        
-        st.markdown("---")
-        
-        if st.button("🚀 提交變更費率申請", type="primary", key="submit_plan_change", use_container_width=True):
-            if not imei_input or len(imei_input) != 15:
-                st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
-            elif not imei_input.isdigit():
-                st.error("❌ IMEI 只能包含數字")
-            else:
-                try:
-                    request = st.session_state.sbd_service.create_plan_change_request(
-                        imei=imei_input,
-                        new_plan_id=selected_plan,
-                        requester=st.session_state.current_username
-                    )
-                    st.success(f"✅ 費率變更申請已提交！")
-                    st.info(f"📋 請求編號: **{request.request_id}**")
-                    st.info(f"📋 新方案: **{selected_plan}** (${plan_fee:.2f}/月)")
-                    st.info(f"📋 目前狀態: **{request.status.value}** (等待財務確認)")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"❌ 申請失敗: {str(e)}")
-    
-    # Tab 2: 暫停設備
-    with tab2:
-        st.subheader("暫停設備服務")
-        
-        suspend_reason = st.text_area(
-            "暫停原因",
-            placeholder="請輸入暫停原因（例如：臨時停用、設備維修等）",
-            help="說明為何需要暫停此設備"
-        )
-        
-        st.warning("⚠️ 暫停後設備將無法使用 SBD 服務，直到恢復為止。")
-        
-        st.markdown("---")
-        
-        if st.button("⏸️ 提交暫停申請", type="primary", key="submit_suspend", use_container_width=True):
-            if not imei_input or len(imei_input) != 15:
-                st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
-            elif not imei_input.isdigit():
-                st.error("❌ IMEI 只能包含數字")
-            elif not suspend_reason:
-                st.error("❌ 請輸入暫停原因")
-            else:
-                try:
-                    request = st.session_state.sbd_service.create_suspend_request(
-                        imei=imei_input,
-                        reason=suspend_reason,
-                        requester=st.session_state.current_username
-                    )
-                    st.success(f"✅ 暫停申請已提交！")
-                    st.info(f"📋 請求編號: **{request.request_id}**")
-                    st.info(f"📋 暫停原因: **{suspend_reason}**")
-                    st.info(f"📋 目前狀態: **{request.status.value}** (等待財務確認)")
-                except Exception as e:
-                    st.error(f"❌ 申請失敗: {str(e)}")
-    
-    # Tab 3: 註銷設備
-    with tab3:
-        st.subheader("註銷設備服務")
-        
-        deactivate_reason = st.text_area(
-            "註銷原因",
-            placeholder="請輸入註銷原因（例如：設備報廢、不再使用等）",
-            help="說明為何需要註銷此設備"
-        )
-        
-        st.error("🚨 **注意**: 註銷後設備將永久停用，無法恢復！")
-        
-        confirm_deactivate = st.checkbox("我確認要註銷此設備")
-        
-        st.markdown("---")
-        
-        if st.button("🔴 提交註銷申請", type="primary", key="submit_deactivate", disabled=not confirm_deactivate, use_container_width=True):
-            if not imei_input or len(imei_input) != 15:
-                st.error("❌ 請輸入有效的 15 位數 IMEI 號碼")
-            elif not imei_input.isdigit():
-                st.error("❌ IMEI 只能包含數字")
-            elif not deactivate_reason:
-                st.error("❌ 請輸入註銷原因")
-            else:
-                try:
-                    request = st.session_state.sbd_service.create_deactivate_request(
-                        imei=imei_input,
-                        reason=deactivate_reason,
-                        requester=st.session_state.current_username
-                    )
-                    st.success(f"✅ 註銷申請已提交！")
-                    st.info(f"📋 請求編號: **{request.request_id}**")
-                    st.info(f"📋 註銷原因: **{deactivate_reason}**")
-                    st.info(f"📋 目前狀態: **{request.status.value}** (等待財務確認)")
-                except Exception as e:
-                    st.error(f"❌ 申請失敗: {str(e)}")
-    
-    # 查詢我的申請
-    st.markdown("---")
-    st.subheader("📋 我的申請記錄")
-    
-    if imei_input:
-        my_requests = st.session_state.sbd_service.get_requests_by_imei(imei_input)
-        
-        if my_requests:
-            for req in my_requests:
-                # 根據操作類型顯示不同圖標
-                action_icons = {
-                    ActionType.CHANGE_PLAN: "💱",
-                    ActionType.SUSPEND: "⏸️",
-                    ActionType.RESUME: "▶️",
-                    ActionType.DEACTIVATE: "🔴",
-                    ActionType.ACTIVATE: "🚀",
-                }
-                icon = action_icons.get(req.action_type, "📄")
-                
-                with st.expander(f"{icon} {req.request_id} - {req.status.value.upper()}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**操作類型:** {req.action_type.value}")
-                        if req.action_type == ActionType.CHANGE_PLAN:
-                            st.write(f"**新資費方案:** {req.plan_id}")
-                        st.write(f"**應付金額:** ${req.amount_due:.2f}")
-                    with col2:
-                        st.write(f"**建立時間:** {req.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-                        st.write(f"**狀態:** {req.status.value}")
-                        if req.approved_by:
-                            st.write(f"**核准者:** {req.approved_by}")
-                    
-                    # 顯示備註
-                    if req.notes:
-                        st.markdown("**備註:**")
-                        st.text(req.notes)
-        else:
-            st.info("此 IMEI 尚無申請記錄")
-
-
-def render_assistant_view():
-    """渲染助理介面"""
-    st.header("👨‍💼 財務核准工作台")
-    
-    # 功能 B: 財務核准工作台
-    pending_requests = st.session_state.sbd_service.list_pending_requests()
-    
-    if not pending_requests:
-        st.info("✅ 目前沒有待核准的請求")
+    # 检查系统状态
+    if not st.session_state.gateway_initialized:
+        st.error("❌ IWS Gateway 未初始化，无法提交请求")
+        st.info("请检查配置或联系管理员")
         return
     
-    st.markdown(f"### 📝 待處理請求 ({len(pending_requests)} 筆)")
+    st.info("""
+    **提交流程说明**：  
+    ✅ 提交后立即传递要求给 Iridium  
+    🔄 后台每3分钟自动查询状态  
+    📋 到助理页面查看实时状态  
+    ⏰ 通常 5-10 分钟内完成
+    """)
     
-    for idx, request in enumerate(pending_requests):
-        with st.container():
-            # 根據操作類型顯示不同顏色標題
-            action_colors = {
-                ActionType.CHANGE_PLAN: "blue",
-                ActionType.SUSPEND: "orange",
-                ActionType.RESUME: "green",
-                ActionType.DEACTIVATE: "red",
-                ActionType.ACTIVATE: "violet",
-            }
-            color = action_colors.get(request.action_type, "gray")
+    st.markdown("---")
+    
+    # 服务请求表单
+    with st.form("service_request_form"):
+        st.subheader("📝 提交服务请求")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            customer_id = st.text_input(
+                "客户编号",
+                value="C001",
+                help="客户的唯一编号"
+            )
             
-            st.markdown(f"#### :{color}[請求 #{idx + 1}: {request.request_id}]")
+            customer_name = st.text_input(
+                "客户名称",
+                placeholder="请输入客户姓名",
+                help="客户姓名"
+            )
             
-            col1, col2, col3 = st.columns([2, 2, 1])
+            imei = st.text_input(
+                "IMEI",
+                placeholder="请输入15位IMEI号码",
+                max_chars=15,
+                help="设备的 IMEI 号码"
+            )
+        
+        with col2:
+            operation = st.selectbox(
+                "操作类型",
+                options=['resume', 'suspend', 'deactivate', 'update_plan'],
+                format_func=get_operation_text,
+                help="选择要执行的操作"
+            )
             
-            with col1:
-                st.write(f"**IMEI:** {request.imei}")
-                st.write(f"**操作:** {request.action_type.value.upper()}")
-                if request.action_type == ActionType.CHANGE_PLAN:
-                    st.write(f"**新方案:** {request.plan_id}")
+            # 如果是变更资费，显示方案选择
+            new_plan_id = None
+            if operation == 'update_plan':
+                new_plan_id = st.selectbox(
+                    "新费率方案",
+                    options=['763925991', '763924583', '763927911', '763925351'],
+                    format_func=lambda x: {
+                        '763925991': 'SBD 0',
+                        '763924583': 'SBD 12',
+                        '763927911': 'SBD 17',
+                        '763925351': 'SBD 30'
+                    }[x],
+                    help="选择新的费率方案"
+                )
             
-            with col2:
-                st.write(f"**應收金額:** ${request.amount_due:.2f}")
-                st.write(f"**申請時間:** {request.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-                st.write(f"**備註:** {request.notes[:50]}..." if len(request.notes) > 50 else f"**備註:** {request.notes}")
-            
-            with col3:
-                # 確認執行按鈕
-                if st.button(
-                    "✅ 確認並執行 IWS",
-                    key=f"approve_{request.request_id}",
-                    type="primary",
-                    use_container_width=True
-                ):
-                    try:
-                        approved_request = st.session_state.sbd_service.process_finance_approval(
-                            request_id=request.request_id,
-                            assistant_name=st.session_state.current_username
+            reason = st.text_area(
+                "操作原因",
+                placeholder="请输入操作原因",
+                help="说明为什么需要执行此操作"
+            )
+        
+        submitted = st.form_submit_button(
+            "🚀 提交请求",
+            use_container_width=True,
+            type="primary"
+        )
+        
+        if submitted:
+            # 验证输入
+            if not customer_id:
+                st.error("❌ 请输入客户编号")
+            elif not customer_name:
+                st.error("❌ 请输入客户名称")
+            elif not imei or len(imei) != 15 or not imei.isdigit():
+                st.error("❌ 请输入有效的 15 位数字 IMEI")
+            elif operation == 'update_plan' and not new_plan_id:
+                st.error("❌ 请选择新的费率方案")
+            elif not reason:
+                st.error("❌ 请输入操作原因")
+            else:
+                try:
+                    with st.spinner("正在提交请求..."):
+                        # 准备参数
+                        kwargs = {'reason': reason}
+                        if operation == 'update_plan':
+                            kwargs['new_plan_id'] = new_plan_id
+                        
+                        # 提交请求
+                        result = submit_service_request(
+                            gateway=st.session_state.gateway,
+                            store=st.session_state.request_store,
+                            customer_id=customer_id,
+                            customer_name=customer_name,
+                            imei=imei,
+                            operation=operation,
+                            **kwargs
                         )
-                        st.success(f"✅ 已核准並執行！狀態: {approved_request.status.value}")
-                        st.info(f"核准者: {approved_request.approved_by}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ 執行失敗: {str(e)}")
-            
-            st.markdown("---")
+                        
+                        # 显示成功消息
+                        st.success("✅ 已正确传递要求给 Iridium")
+                        st.balloons()
+                        
+                        # 显示详情
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.info(f"**请求ID**\n`{result['request_id']}`")
+                        
+                        with col2:
+                            if result.get('transaction_id'):
+                                st.info(f"**Transaction ID**\n`{result['transaction_id']}`")
+                            else:
+                                st.warning("未获取到 Transaction ID")
+                        
+                        with col3:
+                            st.info(f"**状态**\n🔄 正在等待回馈中")
+                        
+                        # 后续说明
+                        st.markdown("---")
+                        st.markdown("""
+                        ### 📊 后续流程
+                        
+                        - **自动查询** - 后台每3分钟自动查询一次状态
+                        - **预计时间** - 通常 5-10 分钟内完成
+                        - **查看状态** - 请到"助理页面"查看实时状态
+                        """)
+                
+                except Exception as e:
+                    st.error(f"❌ 提交失败: {str(e)}")
+                    with st.expander("查看详细错误"):
+                        st.exception(e)
 
+
+# ========== 主程序 ==========
 
 def main():
-    """主程式"""
+    """主程序"""
+    # 初始化
     init_session_state()
+    
+    # 渲染侧边栏
     render_sidebar()
     
-    # 根據角色顯示對應介面
+    # 根据角色显示对应页面
     if st.session_state.current_role == UserRole.CUSTOMER:
         render_customer_view()
     else:
-        render_assistant_view()
-    
-    # 通訊紀錄監視器（兩種角色都可見）
-    st.markdown("---")
-    render_cdr_monitor()
+        # 助理页面 - 使用服务追踪系统的完整 UI
+        render_assistant_page(st.session_state.request_store)
 
 
 if __name__ == "__main__":

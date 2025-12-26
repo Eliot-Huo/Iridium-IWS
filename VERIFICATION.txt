@@ -1,0 +1,37 @@
+v6.12.0 文件验证报告
+==================
+
+核心文件状态
+------------
+✅ app.py (11K)
+   - v6.12 完整集成版
+   - 导入 service_tracking_with_polling
+   - 导入 IWSGateway
+   - 客户页面：提交请求
+   - 助理页面：render_assistant_page
+
+✅ iws_gateway.py (59K)
+   - 添加 get_queue_entry()
+   - 添加 get_iws_request()
+   - 添加 get_subscriber_account()
+   
+✅ service_tracking_with_polling.py (22K)
+   - RequestStore
+   - BackgroundPoller (3分钟轮询)
+   - render_assistant_page
+   - submit_service_request
+
+其他文件
+--------
+○ sbd_service.py (14K) - 旧架构，app.py 未使用
+○ cdr_service.py (21K) - CDR 处理，独立功能
+○ ftp_client.py (8.6K) - FTP 处理，独立功能
+○ tests/* - 测试文件，不需要更新
+
+结论
+----
+✅ 所有核心文件已更新
+✅ app.py 使用新架构
+✅ 没有使用旧的 sbd_service
+✅ 服务追踪系统完整集成
+
