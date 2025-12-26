@@ -75,8 +75,18 @@ def init_session_state():
                 gateway=st.session_state.gateway,
                 store=st.session_state.request_store
             )
-            st.session_state.poller.start()
-            st.session_state.poller_running = True
+            
+            # 初始化 polling_enabled 状态（默认启用）
+            if 'polling_enabled' not in st.session_state:
+                st.session_state.polling_enabled = True
+            
+            # 只有在启用时才启动
+            if st.session_state.polling_enabled:
+                st.session_state.poller.start()
+                st.session_state.poller_running = True
+            else:
+                st.session_state.poller_running = False
+                
         except Exception as e:
             st.session_state.poller_running = False
             st.session_state.poller_error = str(e)
@@ -126,13 +136,59 @@ def render_sidebar():
                     st.code(st.session_state.gateway_error)
         
         # 後台輪詢服務狀態
-        if st.session_state.get('poller_running', False):
-            st.success("✅ 後台輪詢 (3分鐘)")
-        else:
-            st.warning("⏸️ 後台輪詢未執行")
-            if 'poller_error' in st.session_state:
-                with st.expander("查看錯誤"):
-                    st.code(st.session_state.poller_error)
+        poller_status_placeholder = st.empty()
+        
+        with poller_status_placeholder:
+            if st.session_state.get('poller_running', False):
+                st.success("✅ 後台輪詢 (3分鐘)")
+            else:
+                st.warning("⏸️ 後台輪詢未執行")
+                if 'poller_error' in st.session_state:
+                    with st.expander("查看錯誤"):
+                        st.code(st.session_state.poller_error)
+        
+        # 🍎 Safari 兼容性：轮询控制
+        st.markdown("##### ⚙️ 性能设置")
+        
+        polling_enabled = st.checkbox(
+            "启用后台自动轮询",
+            value=st.session_state.get('polling_enabled', True),
+            help="关闭可提高 Safari 浏览器性能。关闭后请使用手动刷新功能。",
+            key="polling_toggle"
+        )
+        
+        # 处理轮询状态变化
+        if 'polling_enabled' not in st.session_state:
+            st.session_state.polling_enabled = True
+        
+        if polling_enabled != st.session_state.polling_enabled:
+            st.session_state.polling_enabled = polling_enabled
+            
+            if 'poller' in st.session_state:
+                if polling_enabled:
+                    # 启动轮询
+                    try:
+                        st.session_state.poller.start()
+                        st.session_state.poller_running = True
+                        st.success("✅ 已启动后台轮询")
+                        time.sleep(0.5)
+                    except Exception as e:
+                        st.error(f"启动失败: {e}")
+                else:
+                    # 停止轮询
+                    try:
+                        st.session_state.poller.stop()
+                        st.session_state.poller_running = False
+                        st.info("⏸️ 已停止后台轮询")
+                        time.sleep(0.5)
+                    except Exception as e:
+                        st.error(f"停止失败: {e}")
+                
+                st.rerun()
+        
+        # Safari 提示
+        st.caption("💡 **提示**: Safari 用户建议关闭自动轮询")
+
         
         # 請求統計
         if 'request_store' in st.session_state:

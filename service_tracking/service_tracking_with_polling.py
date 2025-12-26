@@ -362,6 +362,38 @@ def render_assistant_page(store: RequestStore, gateway=None):
     
     st.title("👨‍💼 助理工作台")
     
+    # 🍎 Safari 兼容性：手动刷新控制栏
+    polling_running = st.session_state.get('poller_running', False)
+    
+    if not polling_running:
+        # 当后台轮询关闭时，显示手动刷新选项
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            st.info("🍎 后台自动轮询已禁用 - 使用手动刷新查看最新状态")
+        
+        with col2:
+            if st.button("🔄 刷新待处理状态", use_container_width=True, type="primary"):
+                if 'poller' in st.session_state:
+                    with st.spinner("正在查询 IWS 状态..."):
+                        try:
+                            # 手动触发一次轮询
+                            st.session_state.poller._poll_pending_requests()
+                            st.success("✅ 状态已更新！")
+                            time.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"刷新失败: {e}")
+                else:
+                    st.warning("轮询服务未初始化")
+        
+        with col3:
+            current_time = get_current_taipei_time()
+            st.caption(f"⏰ {current_time}")
+        
+        st.markdown("---")
+
+    
     # 標籤頁
     tab1, tab2 = st.tabs(["📋 待核准請求", "🔍 已提交請求追蹤"])
     
