@@ -700,18 +700,18 @@ class IWSGateway:
             print(f"[IWS] Failed to parse SBD bundles: {e}")
             return []
     
-    def _parse_account_search(self, xml_response: str, target_imei: Optional[str] = None) -> Optional[str]:
+    def _parse_account_search(self, xml_response: str, target_imei: Optional[str] = None) -> Optional[Dict]:
         """
-        解析 accountSearch 回應，提取 accountNumber
+        解析 accountSearch 回應，提取訂閱者信息
         
-        accountSearch 返回订阅者列表，需要遍历找到匹配的 IMEI
+        accountSearch 返回訂閱者列表，需要遍歷找到匹配的 IMEI
         
         Args:
-            xml_response: SOAP 响应 XML
-            target_imei: 要查找的 IMEI（可选，如果提供则匹配 IMEI）
+            xml_response: SOAP 響應 XML
+            target_imei: 要查找的 IMEI（可選，如果提供則匹配 IMEI）
             
         Returns:
-            Optional[str]: 訂閱者帳號 (accountNumber) 或 None
+            Optional[Dict]: 訂閱者信息 {accountNumber, status, planName} 或 None
         """
         try:
             root = ET.fromstring(xml_response)
@@ -720,7 +720,7 @@ class IWSGateway:
             subscribers = root.findall('.//subscriber')
             
             if not subscribers:
-                # 尝试其他命名空间
+                # 嘗試其他命名空間
                 subscribers = root.findall('.//{http://www.iridium.com/}subscriber')
             
             if not subscribers:
@@ -729,10 +729,10 @@ class IWSGateway:
             
             print(f"[IWS] Found {len(subscribers)} subscriber(s)")
             
-            # 如果提供了 target_imei，查找匹配的订阅者
+            # 如果提供了 target_imei，查找匹配的訂閱者
             if target_imei:
                 for subscriber in subscribers:
-                    # 查找此订阅者的 IMEI
+                    # 查找此訂閱者的 IMEI
                     imei_elem = subscriber.find('.//imei')
                     if imei_elem is None:
                         imei_elem = subscriber.find('.//{http://www.iridium.com/}imei')
@@ -742,33 +742,58 @@ class IWSGateway:
                         print(f"[IWS] Checking subscriber with IMEI: {imei_value}")
                         
                         if imei_value == target_imei:
-                            # 找到匹配的 IMEI，提取 accountNumber
+                            # 找到匹配的 IMEI，提取訂閱者信息
                             account_elem = subscriber.find('.//accountNumber')
                             if account_elem is None:
                                 account_elem = subscriber.find('.//{http://www.iridium.com/}accountNumber')
                             
+                            status_elem = subscriber.find('.//accountStatus')
+                            if status_elem is None:
+                                status_elem = subscriber.find('.//{http://www.iridium.com/}accountStatus')
+                            
+                            plan_elem = subscriber.find('.//planName')
+                            if plan_elem is None:
+                                plan_elem = subscriber.find('.//{http://www.iridium.com/}planName')
+                            
                             if account_elem is not None and account_elem.text:
                                 account_number = account_elem.text.strip()
+                                status = status_elem.text.strip() if status_elem is not None and status_elem.text else 'UNKNOWN'
+                                plan_name = plan_elem.text.strip() if plan_elem is not None and plan_elem.text else None
+                                
                                 print(f"[IWS] Found matching subscriber: {account_number}")
-                                return account_number
+                                print(f"[IWS] Status: {status}")
+                                if plan_name:
+                                    print(f"[IWS] Plan: {plan_name}")
+                                
+                                return {
+                                    'accountNumber': account_number,
+                                    'status': status,
+                                    'planName': plan_name
+                                }
                 
                 print(f"[IWS] No subscriber found with IMEI: {target_imei}")
                 return None
             
-            # 如果没有提供 target_imei，返回第一个订阅者的 accountNumber
+            # 如果沒有提供 target_imei，返回第一個訂閱者的信息
             first_subscriber = subscribers[0]
             account_elem = first_subscriber.find('.//accountNumber')
             if account_elem is None:
                 account_elem = first_subscriber.find('.//{http://www.iridium.com/}accountNumber')
             
-            if account_elem is not None and account_elem.text:
-                return account_elem.text.strip()
+            status_elem = first_subscriber.find('.//accountStatus')
+            if status_elem is None:
+                status_elem = first_subscriber.find('.//{http://www.iridium.com/}accountStatus')
             
-            # 备用：尝试查找 subscriberAccountNumber（旧格式）
-            for path in ['.//subscriberAccountNumber', './/{http://www.iridium.com/}subscriberAccountNumber']:
-                elem = root.find(path)
-                if elem is not None and elem.text:
-                    return elem.text.strip()
+            plan_elem = first_subscriber.find('.//planName')
+            if plan_elem is None:
+                plan_elem = first_subscriber.find('.//{http://www.iridium.com/}planName')
+            
+            if account_elem is not None and account_elem.text:
+                return {
+                    'accountNumber': account_elem.text.strip(),
+                    'status': status_elem.text.strip() if status_elem is not None and status_elem.text else 'UNKNOWN',
+                    'planName': plan_elem.text.strip() if plan_elem is not None and plan_elem.text else None
+                }
             
             return None
             
@@ -939,17 +964,22 @@ class IWSGateway:
                 soap_body=soap_body
             )
             
-            subscriber_account_number = self._parse_account_search(response_xml, target_imei=imei)
+            subscriber_info = self._parse_account_search(response_xml, target_imei=imei)
             
-            if subscriber_account_number:
+            if subscriber_info:
                 print("\n" + "="*60)
-                print(f"✅ Account found: {subscriber_account_number}")
+                print(f"✅ Account found: {subscriber_info['accountNumber']}")
+                print(f"   Status: {subscriber_info['status']}")
+                if subscriber_info.get('planName'):
+                    print(f"   Plan: {subscriber_info['planName']}")
                 print("="*60 + "\n")
                 
                 return {
                     'success': True,
                     'found': True,
-                    'subscriber_account_number': subscriber_account_number,
+                    'subscriber_account_number': subscriber_info['accountNumber'],
+                    'status': subscriber_info['status'],
+                    'plan_name': subscriber_info.get('planName'),
                     'imei': imei,
                     'timestamp': datetime.now(timezone.utc).isoformat()
                 }
@@ -962,6 +992,8 @@ class IWSGateway:
                     'success': True,
                     'found': False,
                     'subscriber_account_number': None,
+                    'status': None,
+                    'plan_name': None,
                     'imei': imei,
                     'message': 'Account not found - device may not be activated',
                     'timestamp': datetime.now(timezone.utc).isoformat()
@@ -1125,15 +1157,16 @@ class IWSGateway:
                 soap_body=search_body
             )
             
-            subscriber_account_number = self._parse_account_search(search_response, target_imei=imei)
+            subscriber_info = self._parse_account_search(search_response, target_imei=imei)
             
-            if not subscriber_account_number:
+            if not subscriber_info:
                 raise IWSException(
                     f"Account not found for IMEI: {imei}. "
                     f"The device may not be activated in the IWS system. "
                     f"Please verify the IMEI or activate the device first."
                 )
             
+            subscriber_account_number = subscriber_info['accountNumber']
             print(f"[IWS] Found account: {subscriber_account_number}")
             
             # 步驟 2: 更新費率

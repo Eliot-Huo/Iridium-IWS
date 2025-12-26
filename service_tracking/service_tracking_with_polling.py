@@ -774,7 +774,13 @@ def approve_and_submit_to_iws(gateway,
             'success': True,
             'request_id': request_id,
             'transaction_id': request['transaction_id'],
-            'message': f'✅ 已提交給 Iridium\n🔄 正在等待回饋中\n📋 Transaction ID: {request["transaction_id"]}'
+            'message': (
+                f'✅ Iridium 已成功接收請求\n\n'
+                f'📋 Transaction ID: {request["transaction_id"]}\n\n'
+                f'⏳ **請注意**：Iridium 需要數分鐘處理此請求\n'
+                f'🔄 系統會自動每 3 分鐘查詢一次處理狀態\n'
+                f'📊 請在「已提交請求追蹤」標籤查看最新狀態'
+            )
         }
     
     except Exception as e:

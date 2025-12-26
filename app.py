@@ -208,23 +208,48 @@ def render_customer_view():
                 help="選擇要執行的操作"
             )
             
-            # 如果是變更資費，顯示方案選擇
+            # 如果是變更資費，顯示方案選擇（醒目提示）
             new_plan_id = None
             if operation == 'update_plan':
+                st.markdown("---")
+                st.markdown("### 📋 選擇新資費方案")
+                st.info("💡 請選擇要變更的資費方案")
+                
+                # 定義方案資訊
+                plan_options = {
+                    '763925991': {
+                        'name': 'SBD 0',
+                        'description': '基礎方案 - 0 則訊息/月'
+                    },
+                    '763924583': {
+                        'name': 'SBD 12',
+                        'description': '標準方案 - 12 則訊息/月'
+                    },
+                    '763927911': {
+                        'name': 'SBD 17',
+                        'description': '進階方案 - 17 則訊息/月'
+                    },
+                    '763925351': {
+                        'name': 'SBD 30',
+                        'description': '專業方案 - 30 則訊息/月'
+                    }
+                }
+                
                 new_plan_id = st.selectbox(
-                    "新資費方案",
-                    options=['763925991', '763924583', '763927911', '763925351'],
-                    format_func=lambda x: {
-                        '763925991': 'SBD 0',
-                        '763924583': 'SBD 12',
-                        '763927911': 'SBD 17',
-                        '763925351': 'SBD 30'
-                    }[x],
-                    help="選擇新的資費方案"
+                    "選擇新資費方案 *",
+                    options=list(plan_options.keys()),
+                    format_func=lambda x: f"{plan_options[x]['name']} ({plan_options[x]['description']})",
+                    help="選擇要變更的資費方案，變更後會立即生效"
                 )
+                
+                # 顯示目前選擇
+                if new_plan_id:
+                    st.success(f"✅ 已選擇：{plan_options[new_plan_id]['name']} - {plan_options[new_plan_id]['description']}")
+                
+                st.markdown("---")
             
             reason = st.text_area(
-                "操作原因",
+                "操作原因 *",
                 placeholder="請輸入操作原因",
                 help="說明為什麼需要執行此操作"
             )
@@ -266,23 +291,18 @@ def render_customer_view():
                             **kwargs
                         )
                         
-                        # 顯示成功訊息
-                        st.success("✅ 已正確傳遞要求給 Iridium")
-                        st.balloons()
+                        # 顯示成功訊息（客戶只是提交請求，尚未傳給 IWS）
+                        st.success("✅ 請求已提交成功")
+                        st.info("📋 **請求狀態：等待助理確認**\n\n您的請求已記錄，需要助理在助理頁面確認後才會提交給 Iridium")
                         
                         # 顯示詳情
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.info(f"**請求ID**\n`{result['request_id']}`")
+                            st.metric("請求ID", result['request_id'])
                         
                         with col2:
-                            if result.get('transaction_id'):
-                                st.info(f"**Transaction ID**\n`{result['transaction_id']}`")
-                            else:
-                                st.warning("未獲取到 Transaction ID")
-                        
-                        with col3:
+                            st.metric("狀態", "等待助理確認")
                             st.info(f"**狀態**\n🔄 正在等待回饋中")
                         
                         # 後續說明
