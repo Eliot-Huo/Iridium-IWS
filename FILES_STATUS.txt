@@ -1,0 +1,50 @@
+SBD-Final v6.12.0 文件状态清单
+==============================
+
+✅ 已更新的核心文件
+------------------
+app.py                                          (11K) - v6.12 主应用
+src/infrastructure/iws_gateway.py               (59K) - 添加3个异步API
+service_tracking/service_tracking_with_polling.py (22K) - 服务追踪系统
+
+📦 新增的文件
+------------
+service_tracking/                               (新目录)
+  └── service_tracking_with_polling.py          (核心追踪系统)
+
+docs/                                          (文档目录)
+  ├── COMPLETE_SOLUTION_SUMMARY.md              (完整方案说明)
+  ├── SERVICE_TRACKING_INTEGRATION_GUIDE.md     (集成指南)
+  ├── STANDARD_ASYNC_IMPLEMENTATION.md          (异步实现)
+  └── ...
+
+examples/                                       (示例目录)
+  └── demo_service_tracking_app.py              (演示应用)
+
+○ 保持不变的文件（独立功能）
+---------------------------
+src/services/sbd_service.py                     (14K) - 旧业务逻辑
+src/services/cdr_service.py                     (21K) - CDR处理
+src/services/cdr_service_tapii.py               (19K) - 台湾CDR
+src/infrastructure/ftp_client.py                (8.6K) - FTP客户端
+src/parsers/sbd_parser.py                       (14K) - SBD解析
+src/repositories/repo.py                        (1.7K) - 数据仓库
+src/models/models.py                            (2.1K) - 数据模型
+src/config/settings.py                          (4.6K) - 配置
+src/config/constants.py                         (637B) - 常量
+
+○ 测试文件（不影响生产）
+-----------------------
+tests/test_*.py                                 (多个测试文件)
+
+运行命令
+--------
+streamlit run app.py
+
+核心功能
+--------
+1. 客户页面 - 提交请求（恢复/暂停/注销/变更资费）
+2. 助理页面 - 查看状态（客户编号/需求/状态/生效时间）
+3. 后台轮询 - 每3分钟自动查询IWS状态
+4. 台湾时间 - 所有时间自动转换
+

@@ -458,7 +458,6 @@ class IWSGateway:
                     <subscriberAccountNumber>{subscriber_account_number}</subscriberAccountNumber>
                     <imei>{imei}</imei>
                     <bulkAction>FALSE</bulkAction>
-                    <newStatus>ACTIVE</newStatus>
                     <plan>
                         <sbdBundleId>{plan_id_digits}</sbdBundleId>
                         <lritFlagstate>{lrit_flagstate}</lritFlagstate>
