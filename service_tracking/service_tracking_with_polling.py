@@ -895,7 +895,7 @@ def approve_and_submit_to_iws(gateway,
             # 更新資費
             api_result = gateway.update_subscriber_plan(
                 imei=request['imei'],
-                new_plan_id=request.get('new_plan_id')
+                new_plan_code=request.get('new_plan_id')  # 使用 new_plan_code 参数
             )
         
         else:
