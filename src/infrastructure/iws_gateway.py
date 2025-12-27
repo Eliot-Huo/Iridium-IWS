@@ -1168,41 +1168,45 @@ class IWSGateway:
     
     def update_subscriber_plan(self,
                               imei: str,
-                              new_plan_id: str,
+                              new_plan_code: str,
                               lrit_flagstate: str = "",
                               ring_alerts_flag: bool = False) -> Dict:
         """
-        變更設備費率方案
+        变更设备资费方案（符合 IWS 开发规范 v4.0）
         
-        使用 accountUpdate 方法（根據 WSDL p.67）
-        
-        工作流程：
-        1. 用 accountSearch 查詢 subscriberAccountNumber
-        2. 用 accountUpdate 更新費率
+        正确流程（根据 IWS 官方文档）：
+        1. getSBDBundles - 查询可用方案
+        2. getSubscriberAccount - 获取当前状态  
+        3. 检查 PENDING 状态
+        4. accountUpdate - 执行变更
+        5. 返回 TransactionID 用于追踪
         
         Args:
-            imei: 設備 IMEI
-            new_plan_id: 新的 SBD Bundle ID（支援 "SBD12" 或 "12" 格式）
-            lrit_flagstate: LRIT Flag State（3字元或空字串）
+            imei: 设备 IMEI
+            new_plan_code: 新方案代码（如 "SBD12", "SBD0", "SBD17", "SBD30"）
+            lrit_flagstate: LRIT Flag State（3字符或空字符串）
             ring_alerts_flag: Ring Alerts Flag
             
         Returns:
-            Dict: 操作結果
+            Dict: 操作结果，包含 transaction_id
+            
+        Raises:
+            IWSException: 当方案不可用、账号PENDING或其他错误时
         """
         self._validate_imei(imei)
         
         print("\n" + "="*60)
-        print("💱 [IWS] Updating subscriber plan...")
+        print("💱 [IWS] 变更资费方案（符合 IWS 开发规范）")
         print("="*60)
         print(f"IMEI: {imei}")
-        print(f"New Plan: {new_plan_id}")
+        print(f"目标方案代码: {new_plan_code}")
         print(f"LRIT Flagstate: '{lrit_flagstate}'")
         print(f"Ring Alerts: {ring_alerts_flag}")
         print("="*60 + "\n")
         
         try:
-            # 步驟 1: 用 IMEI 搜尋訂閱者帳號
-            print("[IWS] Step 1: Searching for subscriber account...")
+            # ========== 步骤 1: 查询订阅者账号 ==========
+            print("[步骤 1/4] 查询订阅者账号...")
             search_action, search_body = self._build_account_search_body(imei)
             
             search_response = self._send_soap_request(
@@ -1214,20 +1218,80 @@ class IWSGateway:
             
             if not subscriber_info:
                 raise IWSException(
-                    f"Account not found for IMEI: {imei}. "
-                    f"The device may not be activated in the IWS system. "
-                    f"Please verify the IMEI or activate the device first."
+                    f"未找到 IMEI {imei} 的账号。"
+                    f"设备可能未在 IWS 系统中激活。"
                 )
             
             subscriber_account_number = subscriber_info['accountNumber']
-            print(f"[IWS] Found account: {subscriber_account_number}")
+            current_status = subscriber_info.get('status', 'UNKNOWN')
+            current_plan = subscriber_info.get('planName', 'Unknown')
             
-            # 步驟 2: 更新費率
-            print("[IWS] Step 2: Updating plan...")
+            print(f"✅ 找到账号: {subscriber_account_number}")
+            print(f"   当前状态: {current_status}")
+            print(f"   当前方案: {current_plan}")
+            
+            # ========== 步骤 2: 检查 PENDING 状态 ==========
+            print("\n[步骤 2/4] 检查账号状态...")
+            if current_status == 'PENDING':
+                raise IWSException(
+                    "❌ 账号有正在处理的订单（PENDING 状态）\n\n"
+                    "根据 IWS 规范，PENDING 状态下禁止任何更新操作。\n"
+                    "必须等待当前订单完成后才能变更资费。\n\n"
+                    "建议：\n"
+                    "• 等待 5-15 分钟后重试\n"
+                    "• 使用 getQueueEntry 查询订单进度\n"
+                    "• 联系技术支持了解订单详情"
+                )
+            
+            print(f"✅ 账号状态正常（{current_status}），可以更新")
+            
+            # ========== 步骤 3: 查询可用方案并验证 ==========
+            print("\n[步骤 3/4] 查询可用资费方案...")
+            
+            # 获取当前 bundle ID（用于查询可升级/降级的方案）
+            current_bundle_id = subscriber_info.get('bundleId', '0')
+            
+            bundles_result = self.get_sbd_bundles(
+                from_bundle_id=current_bundle_id,
+                for_activate=False  # False = 更新现有账号
+            )
+            
+            if not bundles_result.get('success'):
+                print("⚠️ 无法查询可用方案，尝试使用提供的方案代码...")
+                # 如果查询失败，直接使用提供的代码（向后兼容）
+                target_bundle_id = new_plan_code
+            else:
+                # 提取方案代码和 ID 映射
+                bundle_map = {}
+                for bundle in bundles_result['bundles']:
+                    # 尝试多个可能的字段名
+                    code = (bundle.get('bundleCode') or 
+                           bundle.get('code') or 
+                           bundle.get('name'))
+                    bundle_id = (bundle.get('bundleId') or 
+                                bundle.get('id'))
+                    
+                    if code and bundle_id:
+                        bundle_map[code] = bundle_id
+                
+                print(f"✅ 可用方案: {list(bundle_map.keys())}")
+                
+                # 验证目标方案是否可用
+                if new_plan_code in bundle_map:
+                    target_bundle_id = bundle_map[new_plan_code]
+                    print(f"✅ 目标方案可用: {new_plan_code} (ID: {target_bundle_id})")
+                else:
+                    # 尝试直接使用代码（可能是完整的 bundle ID）
+                    print(f"⚠️ 方案 {new_plan_code} 不在返回列表中")
+                    print(f"   尝试直接使用: {new_plan_code}")
+                    target_bundle_id = new_plan_code
+            
+            # ========== 步骤 4: 执行更新 ==========
+            print("\n[步骤 4/4] 执行资费变更...")
             action_name, soap_body = self._build_account_update_body(
                 imei=imei,
                 subscriber_account_number=subscriber_account_number,
-                new_plan_id=new_plan_id,
+                new_plan_id=target_bundle_id,  # 使用查询到的或提供的 bundle ID
                 lrit_flagstate=lrit_flagstate,
                 ring_alerts_flag=ring_alerts_flag
             )
@@ -1238,27 +1302,40 @@ class IWSGateway:
             )
             
             transaction_id = self._extract_transaction_id(response_xml)
-            plan_id_digits = self._extract_plan_id_digits(new_plan_id)
             
             print("\n" + "="*60)
-            print("✅ Plan updated successfully")
+            print("✅ 资费变更请求已提交")
+            print("="*60)
+            print(f"Transaction ID: {transaction_id or 'N/A'}")
+            print(f"当前方案: {current_plan}")
+            print(f"目标方案: {new_plan_code}")
+            print(f"Bundle ID: {target_bundle_id}")
+            print("")
+            print("⚠️ 重要提示：")
+            print("• 变更不会立即生效")
+            print("• 账号状态会变为 PENDING")
+            print("• 处理通常需要 5-15 分钟")
+            print("• 使用 getQueueEntry 追踪进度")
+            print("• 完成后状态会变回 ACTIVE")
             print("="*60 + "\n")
             
             return {
                 'success': True,
                 'transaction_id': transaction_id or 'N/A',
-                'message': 'Subscriber plan updated successfully',
+                'message': '资费变更请求已提交',
                 'imei': imei,
                 'subscriber_account_number': subscriber_account_number,
-                'new_plan_id': new_plan_id,
-                'plan_id_digits': plan_id_digits,
+                'current_plan': current_plan,
+                'target_plan_code': new_plan_code,
+                'target_bundle_id': target_bundle_id,
+                'status': 'PENDING',
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except IWSException:
             raise
         except Exception as e:
-            raise IWSException(f"Unexpected error during plan update: {str(e)}")
+            raise IWSException(f"资费变更失败: {str(e)}")
     
     def suspend_subscriber(self, 
                           imei: str,

@@ -454,33 +454,37 @@ def render_customer_view():
         st.markdown("---")
         st.markdown("### 📋 資費方案選擇")
         
-        # 定義方案資訊
+        # 定義方案資訊（使用 IWS 方案代碼，而非硬編碼數字）
         plan_options = {
-            '763925991': {
+            'SBD0': {
                 'name': 'SBD 0',
                 'description': '基礎方案 - 0 則訊息/月',
-                'monthly_fee': '$0'
+                'monthly_fee': '$0',
+                'messages': 0
             },
-            '763924583': {
+            'SBD12': {
                 'name': 'SBD 12',
                 'description': '標準方案 - 12 則訊息/月',
-                'monthly_fee': '$30'
+                'monthly_fee': '$30',
+                'messages': 12
             },
-            '763927911': {
+            'SBD17': {
                 'name': 'SBD 17',
                 'description': '進階方案 - 17 則訊息/月',
-                'monthly_fee': '$45'
+                'monthly_fee': '$45',
+                'messages': 17
             },
-            '763925351': {
+            'SBD30': {
                 'name': 'SBD 30',
                 'description': '專業方案 - 30 則訊息/月',
-                'monthly_fee': '$60'
+                'monthly_fee': '$60',
+                'messages': 30
             }
         }
         
         # 显示提示
         if operation == 'update_plan':
-            st.info("💡 請選擇要變更的資費方案")
+            st.info("💡 請選擇要變更的資費方案（符合 IWS 開發規範）")
         else:
             st.warning("⚠️ 只有選擇「變更資費方案」操作時才需要選擇資費")
         
@@ -489,7 +493,7 @@ def render_customer_view():
             "選擇新資費方案" + (" *" if operation == 'update_plan' else " (當前操作不需要)"),
             options=list(plan_options.keys()),
             format_func=lambda x: f"{plan_options[x]['name']} - {plan_options[x]['description']} ({plan_options[x]['monthly_fee']})",
-            help="選擇要變更的資費方案，變更後會立即生效",
+            help="選擇要變更的資費方案。系統會先查詢可用方案，再執行變更。",
             disabled=(operation != 'update_plan')  # 非變更資費時禁用
         )
         
@@ -499,10 +503,10 @@ def render_customer_view():
             col_a, col_b, col_c = st.columns(3)
             
             with col_a:
-                st.metric("方案名稱", selected_plan['name'])
+                st.metric("方案代碼", selected_plan['name'])
             
             with col_b:
-                st.metric("訊息數量", selected_plan['description'].split('-')[1].strip())
+                st.metric("訊息數量", f"{selected_plan['messages']} 則/月")
             
             with col_c:
                 st.metric("月費", selected_plan['monthly_fee'])
