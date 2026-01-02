@@ -474,7 +474,7 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
         
         # 載入 CDR
         from src.parsers.tapii_parser import TAPIIParser
-        from src.domain.cdr import SimpleCDRRecord
+        from src.services.cdr_service import SimpleCDRRecord
         from datetime import timedelta
         import tempfile
         import os
