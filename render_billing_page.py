@@ -327,11 +327,10 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         records_data = []
         for record in bill.records:
             records_data.append({
-                '時間': record.call_start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                '服務': record.service_type,
-                '訊息大小': f"{record.message_size} bytes",
-                '方向': record.direction,
-                '類型': record.message_type
+                '時間': record.call_datetime.strftime('%Y-%m-%d %H:%M:%S'),
+                '服務': record.call_type,
+                '資料量': f"{record.data_mb:.6f} MB",
+                '服務代碼': record.service_code
             })
         
         df = pd.DataFrame(records_data)
