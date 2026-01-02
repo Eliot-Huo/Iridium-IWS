@@ -141,14 +141,6 @@ class IncrementalSyncManager:
         new_files = [f for f in ftp_files if not status.is_file_processed(f)]
         new_file_count = len(new_files)
         
-        # ⭐ 測試模式：只處理最新 10 個檔案
-        TEST_LIMIT = 10
-        if new_file_count > TEST_LIMIT:
-            if progress_callback:
-                progress_callback(f"⚠️ 測試模式：共 {new_file_count} 個新檔案，只處理最新 {TEST_LIMIT} 個")
-            new_files = new_files[-TEST_LIMIT:]  # 取最後（最新）10 個
-            new_file_count = TEST_LIMIT
-        
         if new_file_count == 0:
             if progress_callback:
                 progress_callback(f"✅ 所有檔案已同步（共 {total_ftp_files} 個）")

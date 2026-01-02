@@ -641,7 +641,7 @@ def main():
         # 助理端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢", "價格管理", "CDR 同步管理", "CDR 帳單查詢", "🔍 Google Drive 診斷", "🧪 API 測試", "🔎 資料夾反查", "📁 建立服務帳號資料夾", "🔑 Secrets 檢查", "📁 資料夾查找"],
+            options=["設備管理", "費用查詢", "價格管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
             key="assistant_page"
         )
         
@@ -664,30 +664,10 @@ def main():
             # CDR 帳單查詢頁面
             from render_cdr_billing_query_page import render_cdr_billing_query_page
             render_cdr_billing_query_page()
-        elif page == "🔍 Google Drive 診斷":
-            # Google Drive 診斷頁面
-            from render_gdrive_diagnostic_page import render_gdrive_diagnostic_page
-            render_gdrive_diagnostic_page()
-        elif page == "🧪 API 測試":
-            # Google Drive API 測試頁面
-            from test_gdrive_api import test_google_drive_api
-            test_google_drive_api()
-        elif page == "🔎 資料夾反查":
-            # 資料夾 ID 反查頁面
-            from reverse_lookup_folder import reverse_lookup_folder
-            reverse_lookup_folder()
         elif page == "📁 建立服務帳號資料夾":
             # 建立服務帳號資料夾頁面
             from create_sa_folder import create_sa_folder
             create_sa_folder()
-        elif page == "🔑 Secrets 檢查":
-            # Secrets 檢查頁面
-            from render_secrets_check_page import render_secrets_check_page
-            render_secrets_check_page()
-        elif page == "📁 資料夾查找":
-            # 資料夾查找頁面
-            from render_folder_finder_page import render_folder_finder_page
-            render_folder_finder_page()
 
 
 if __name__ == "__main__":
