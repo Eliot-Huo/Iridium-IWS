@@ -1,0 +1,423 @@
+"""
+CDR 帳單查詢頁面
+整合 Google Drive CDR 檔案與 IWS 計費查詢
+
+功能：
+1. 使用者輸入 IMEI、年份、月份
+2. 從 Google Drive 下載對應月份的 CDR 檔案
+3. 解析 TAP II 格式取得通訊記錄
+4. 查詢 IWS 取得資費方案
+5. 計算並顯示月帳單
+"""
+import streamlit as st
+from datetime import date
+from pathlib import Path
+import tempfile
+import os
+
+from src.infrastructure.iws_gateway import IWSGateway
+from src.infrastructure.gdrive_client import GoogleDriveClient, GDRIVE_AVAILABLE
+from src.parsers.tapii_parser import TAPIIParser
+from src.services.billing_service import BillingService, BillingServiceException
+from src.services.cdr_service import CDRService, SimpleCDRRecord
+from src.config.settings import GCP_SERVICE_ACCOUNT_JSON
+
+
+def render_cdr_billing_query_page():
+    """渲染 CDR 帳單查詢頁面"""
+    
+    st.title("📊 CDR 帳單查詢")
+    st.markdown("---")
+    
+    # 檢查 Google Drive 是否可用
+    if not GDRIVE_AVAILABLE:
+        st.error("❌ Google Drive API 未安裝")
+        st.code("pip install google-api-python-client google-auth")
+        return
+    
+    if not GCP_SERVICE_ACCOUNT_JSON:
+        st.error("❌ GCP 服務帳號未設定")
+        st.info("請在 `.streamlit/secrets.toml` 中設定 `gcp_service_account`")
+        return
+    
+    # ========== 查詢表單 ==========
+    st.subheader("🔍 查詢條件")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        imei = st.text_input(
+            "IMEI",
+            placeholder="例如：301434061230580",
+            help="請輸入 15 位數字的 IMEI"
+        )
+    
+    with col2:
+        year = st.number_input(
+            "年份",
+            min_value=2020,
+            max_value=2030,
+            value=date.today().year,
+            step=1
+        )
+    
+    with col3:
+        month = st.number_input(
+            "月份",
+            min_value=1,
+            max_value=12,
+            value=date.today().month,
+            step=1
+        )
+    
+    # 驗證 IMEI
+    if imei and (len(imei) != 15 or not imei.isdigit()):
+        st.warning("⚠️ IMEI 必須是 15 位數字")
+        return
+    
+    # ========== 查詢按鈕 ==========
+    if st.button("🔎 查詢帳單", type="primary", disabled=not imei):
+        with st.spinner("查詢中..."):
+            try:
+                # 1. 初始化客戶端
+                gdrive_config = {
+                    'service_account_json': GCP_SERVICE_ACCOUNT_JSON
+                }
+                
+                # 優先使用 folder ID
+                if 'GCP_CDR_FOLDER_ID' in st.secrets:
+                    gdrive_config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
+                else:
+                    # 後備方案：使用資料夾名稱搜尋
+                    gdrive_config['root_folder_name'] = 'CDR_Files'
+                
+                gdrive = GoogleDriveClient(**gdrive_config)
+                
+                gateway = IWSGateway(
+                    username=st.secrets.get('IWS_USER', ''),
+                    password=st.secrets.get('IWS_PASS', ''),
+                    sp_account=st.secrets.get('IWS_SP_ACCOUNT', '')
+                )
+                
+                billing_service = BillingService(gateway)
+                
+                # 2. 從 Google Drive 下載 CDR 檔案
+                st.info(f"📥 正在從 Google Drive 下載 {year}/{month:02d} 的 CDR 檔案...")
+                
+                cdr_records = _download_and_parse_cdr(
+                    gdrive=gdrive,
+                    imei=imei,
+                    year=year,
+                    month=month
+                )
+                
+                if not cdr_records:
+                    st.warning(f"⚠️ 在 {year}/{month:02d} 沒有找到 IMEI {imei} 的通訊記錄")
+                    return
+                
+                st.success(f"✅ 找到 {len(cdr_records)} 筆通訊記錄")
+                
+                # 3. 查詢月帳單
+                st.info("💰 計算費用中...")
+                
+                bill = billing_service.query_monthly_bill(
+                    imei=imei,
+                    year=year,
+                    month=month,
+                    cdr_records=cdr_records
+                )
+                
+                # 4. 顯示帳單
+                _display_bill(bill, imei, year, month)
+                
+            except BillingServiceException as e:
+                st.error(f"❌ 查詢失敗: {e}")
+            except Exception as e:
+                st.error(f"❌ 系統錯誤: {e}")
+                with st.expander("🐛 詳細錯誤資訊"):
+                    st.exception(e)
+
+
+def _download_and_parse_cdr(gdrive: GoogleDriveClient,
+                            imei: str,
+                            year: int,
+                            month: int) -> list[SimpleCDRRecord]:
+    """
+    從 Google Drive 下載並解析 CDR 檔案
+    
+    Args:
+        gdrive: Google Drive 客戶端
+        imei: 設備 IMEI
+        year: 年份
+        month: 月份
+        
+    Returns:
+        該 IMEI 的通訊記錄列表
+    """
+    # 1. 取得月份資料夾
+    folder_date = date(year, month, 1)
+    
+    try:
+        folder_id = gdrive.get_month_folder_id(folder_date)
+    except Exception as e:
+        st.warning(f"⚠️ 月份資料夾不存在: {year}/{month:02d}")
+        return []
+    
+    # 2. 列出資料夾中的所有 .dat 檔案
+    files = gdrive.list_files(folder_id)
+    cdr_files = [f for f in files if f['name'].endswith('.dat')]
+    
+    if not cdr_files:
+        st.warning(f"⚠️ {year}/{month:02d} 資料夾中沒有 CDR 檔案")
+        return []
+    
+    st.info(f"📄 找到 {len(cdr_files)} 個 CDR 檔案，開始解析...")
+    
+    # 3. 下載並解析所有檔案
+    all_records = []
+    parser = TAPIIParser()
+    cdr_service = CDRService()
+    
+    # 使用臨時目錄
+    with tempfile.TemporaryDirectory() as temp_dir:
+        progress_bar = st.progress(0)
+        
+        for i, file_info in enumerate(cdr_files):
+            # 更新進度
+            progress = (i + 1) / len(cdr_files)
+            progress_bar.progress(progress, text=f"處理中: {file_info['name']}")
+            
+            # 下載檔案
+            local_path = os.path.join(temp_dir, file_info['name'])
+            
+            try:
+                # 從 Google Drive 下載
+                content = gdrive.download_file_content_by_id(file_info['id'])
+                
+                with open(local_path, 'wb') as f:
+                    f.write(content)
+                
+                # 解析記錄
+                records = parser.parse_file(local_path)
+                
+                # 過濾出該 IMEI 的記錄（Type 20）
+                for record in records:
+                    if record.record_type == parser.TYPE_DATA:
+                        # 從原始資料提取 IMEI（假設在特定位置）
+                        # 根據 TAP II 格式，IMEI 在 Byte 10-24 或 25-40
+                        raw_data = record.raw_data
+                        
+                        # 嘗試提取 IMEI（可能需要根據實際格式調整）
+                        record_imei = _extract_imei_from_record(raw_data)
+                        
+                        if record_imei == imei:
+                            # 轉換為 SimpleCDRRecord
+                            cdr_record = _convert_to_simple_cdr(record, file_info['name'])
+                            all_records.append(cdr_record)
+                
+            except Exception as e:
+                st.warning(f"⚠️ 無法處理檔案 {file_info['name']}: {e}")
+                continue
+        
+        progress_bar.empty()
+    
+    return all_records
+
+
+def _extract_imei_from_record(raw_data: bytes) -> str:
+    """
+    從 TAP II 記錄中提取 IMEI
+    
+    Args:
+        raw_data: 原始記錄資料（160 字元）
+        
+    Returns:
+        IMEI 字串
+    """
+    try:
+        # 根據 TAP II v9.2 文件：
+        # - IMSI: Byte 10-24 (15 chars)
+        # - IMEI: Byte 25-40 (16 chars)
+        
+        # 嘗試從 IMSI 位置讀取（SBD 使用 IMEI 作為 IMSI）
+        imsi_imei = raw_data[9:24].decode('ascii', errors='ignore').strip()
+        if imsi_imei and imsi_imei.isdigit() and len(imsi_imei) == 15:
+            return imsi_imei
+        
+        # 嘗試從 IMEI 位置讀取
+        imei = raw_data[24:40].decode('ascii', errors='ignore').strip()
+        if imei and imei.isdigit():
+            # 移除前綴 '30'（Iridium Satellite）
+            if imei.startswith('30') and len(imei) >= 15:
+                return imei[:15]
+            return imei[:15] if len(imei) >= 15 else imei
+        
+        return ""
+        
+    except Exception:
+        return ""
+
+
+def _convert_to_simple_cdr(tapii_record, filename: str) -> SimpleCDRRecord:
+    """
+    將 TAP II 記錄轉換為 SimpleCDRRecord
+    
+    Args:
+        tapii_record: TAP II 記錄
+        filename: 檔案名稱
+        
+    Returns:
+        SimpleCDRRecord
+    """
+    # 解析日期時間
+    try:
+        if tapii_record.charging_date and tapii_record.charging_time:
+            # YYMMDD HHMMSS
+            yy = tapii_record.charging_date[0:2]
+            mm = tapii_record.charging_date[2:4]
+            dd = tapii_record.charging_date[4:6]
+            
+            hh = tapii_record.charging_time[0:2]
+            mi = tapii_record.charging_time[2:4]
+            ss = tapii_record.charging_time[4:6]
+            
+            # 假設 YY >= 20 是 20XX
+            yyyy = '20' + yy if int(yy) >= 20 else '19' + yy
+            
+            timestamp = f"{yyyy}-{mm}-{dd} {hh}:{mi}:{ss}"
+        else:
+            timestamp = ""
+    except:
+        timestamp = ""
+    
+    # 從原始資料提取其他欄位
+    raw_data = tapii_record.raw_data
+    
+    # Data Volume Reference (Byte 134-139)
+    try:
+        data_volume = int(raw_data[133:139].decode('ascii', errors='ignore').strip() or 0)
+    except:
+        data_volume = 0
+    
+    return SimpleCDRRecord(
+        timestamp=timestamp,
+        imei="",  # 已經過濾，不需要重複
+        data_volume=data_volume,
+        service_type="SBD",  # 可以從 Service Code 判斷
+        raw_record=filename
+    )
+
+
+def _display_bill(bill, imei: str, year: int, month: int):
+    """
+    顯示月帳單
+    
+    Args:
+        bill: MonthlyBill 物件
+        imei: IMEI
+        year: 年份
+        month: 月份
+    """
+    st.markdown("---")
+    st.subheader("📄 月帳單明細")
+    
+    # 基本資訊
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("IMEI", imei)
+    
+    with col2:
+        st.metric("查詢月份", f"{year}/{month:02d}")
+    
+    with col3:
+        st.metric("資費方案", bill.plan_name)
+    
+    with col4:
+        st.metric("通訊筆數", f"{bill.total_records} 筆")
+    
+    # 費用明細
+    st.markdown("### 💰 費用明細")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.metric(
+            "月租費",
+            f"${bill.monthly_fee:.2f}",
+            help="包含在方案內的固定月費"
+        )
+        
+        st.metric(
+            "超量費用",
+            f"${bill.overage_charge:.2f}",
+            help="超過方案流量的費用"
+        )
+    
+    with col2:
+        st.metric(
+            "其他費用",
+            f"${bill.other_charges:.2f}",
+            help="Mailbox Check、Registration 等費用"
+        )
+        
+        st.metric(
+            "總金額",
+            f"${bill.total_amount:.2f}",
+            delta=f"${bill.total_amount - bill.monthly_fee:.2f}",
+            help="本月總費用"
+        )
+    
+    # 用量統計
+    st.markdown("### 📊 用量統計")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            "總上傳流量",
+            f"{bill.total_mo_bytes:,} bytes",
+            help="Mobile Originated (上行)"
+        )
+    
+    with col2:
+        st.metric(
+            "總下載流量",
+            f"{bill.total_mt_bytes:,} bytes",
+            help="Mobile Terminated (下行)"
+        )
+    
+    with col3:
+        usage_percentage = (bill.total_mo_bytes / bill.plan_included_bytes * 100) if bill.plan_included_bytes > 0 else 0
+        st.metric(
+            "方案使用率",
+            f"{usage_percentage:.1f}%",
+            help=f"已用 / 方案內含 {bill.plan_included_bytes:,} bytes"
+        )
+    
+    # 明細記錄
+    if st.checkbox("📋 顯示詳細通訊記錄"):
+        st.markdown("### 通訊記錄")
+        
+        if hasattr(bill, 'records') and bill.records:
+            import pandas as pd
+            
+            # 轉換為 DataFrame
+            records_data = []
+            for record in bill.records:
+                records_data.append({
+                    '時間': record.timestamp,
+                    '流量 (bytes)': record.data_volume,
+                    '服務類型': record.service_type,
+                    '來源檔案': record.raw_record
+                })
+            
+            df = pd.DataFrame(records_data)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("無詳細記錄資訊")
+
+
+if __name__ == "__main__":
+    # 用於測試
+    render_cdr_billing_query_page()
