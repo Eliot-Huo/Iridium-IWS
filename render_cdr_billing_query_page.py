@@ -20,7 +20,6 @@ from src.infrastructure.gdrive_client import GoogleDriveClient, GDRIVE_AVAILABLE
 from src.parsers.tapii_parser import TAPIIParser
 from src.services.billing_service import BillingService, BillingServiceException
 from src.services.cdr_service import CDRService, SimpleCDRRecord
-from src.config.settings import GCP_SERVICE_ACCOUNT_JSON
 
 
 def render_cdr_billing_query_page():
@@ -35,9 +34,11 @@ def render_cdr_billing_query_page():
         st.code("pip install google-api-python-client google-auth")
         return
     
-    if not GCP_SERVICE_ACCOUNT_JSON:
-        st.error("❌ GCP 服務帳號未設定")
-        st.info("請在 `.streamlit/secrets.toml` 中設定 `gcp_service_account`")
+    # 取得 Google Drive 設定
+    gdrive_config = _get_gdrive_config()
+    if not gdrive_config:
+        st.error("❌ Google Drive 未設定")
+        st.info("請在 Secrets 中設定 `gcp_service_account` 或 `GCP_SERVICE_ACCOUNT_JSON`")
         return
     
     # ========== 查詢表單 ==========
@@ -80,17 +81,6 @@ def render_cdr_billing_query_page():
         with st.spinner("查詢中..."):
             try:
                 # 1. 初始化客戶端
-                gdrive_config = {
-                    'service_account_json': GCP_SERVICE_ACCOUNT_JSON
-                }
-                
-                # 優先使用 folder ID
-                if 'GCP_CDR_FOLDER_ID' in st.secrets:
-                    gdrive_config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
-                else:
-                    # 後備方案：使用資料夾名稱搜尋
-                    gdrive_config['root_folder_name'] = 'CDR_Files'
-                
                 gdrive = GoogleDriveClient(**gdrive_config)
                 
                 gateway = IWSGateway(
@@ -416,6 +406,38 @@ def _display_bill(bill, imei: str, year: int, month: int):
             st.dataframe(df, use_container_width=True)
         else:
             st.info("無詳細記錄資訊")
+
+
+def _get_gdrive_config() -> dict:
+    """取得 Google Drive 設定"""
+    if not GDRIVE_AVAILABLE:
+        return None
+    
+    try:
+        # 優先使用新格式 (TOML section)
+        if 'gcp_service_account' in st.secrets:
+            config = {
+                'service_account_info': dict(st.secrets.gcp_service_account),
+                'root_folder_name': 'CDR_Files'
+            }
+            # 如果有提供 folder ID，直接使用
+            if 'GCP_CDR_FOLDER_ID' in st.secrets:
+                config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
+            return config
+        # 向後兼容舊格式 (JSON 字串)
+        elif 'GCP_SERVICE_ACCOUNT_JSON' in st.secrets:
+            config = {
+                'service_account_json': st.secrets['GCP_SERVICE_ACCOUNT_JSON'],
+                'root_folder_name': 'CDR_Files'
+            }
+            if 'GCP_CDR_FOLDER_ID' in st.secrets:
+                config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
+            return config
+        else:
+            return None
+    except Exception as e:
+        st.error(f"❌ 讀取 Google Drive 設定失敗: {e}")
+        return None
 
 
 if __name__ == "__main__":

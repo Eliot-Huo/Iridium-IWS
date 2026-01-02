@@ -66,7 +66,6 @@ def _get_gdrive_config() -> dict:
     try:
         # 優先使用新格式 (TOML section)
         if 'gcp_service_account' in st.secrets:
-            st.info("✅ 找到 gcp_service_account 設定")
             config = {
                 'service_account_info': dict(st.secrets.gcp_service_account),
                 'root_folder_name': 'CDR_Files'
@@ -74,15 +73,12 @@ def _get_gdrive_config() -> dict:
             # 如果有提供 folder ID，直接使用
             if 'GCP_CDR_FOLDER_ID' in st.secrets:
                 config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
-                st.info(f"✅ 使用指定的資料夾 ID: {st.secrets['GCP_CDR_FOLDER_ID']}")
             # 如果有提供 owner email，自動共享新建立的資料夾
             if 'OWNER_EMAIL' in st.secrets:
                 config['owner_email'] = st.secrets['OWNER_EMAIL']
-                st.info(f"✅ 新建立的資料夾將自動共享給: {st.secrets['OWNER_EMAIL']}")
             return config
         # 向後兼容舊格式 (JSON 字串)
         elif 'GCP_SERVICE_ACCOUNT_JSON' in st.secrets:
-            st.info("✅ 找到 GCP_SERVICE_ACCOUNT_JSON 設定（舊格式）")
             config = {
                 'service_account_json': st.secrets['GCP_SERVICE_ACCOUNT_JSON'],
                 'root_folder_name': 'CDR_Files'
@@ -219,8 +215,13 @@ def _run_sync(sync_manager: IncrementalSyncManager):
         # 添加訊息到列表
         messages.append(message)
         
-        # 更新顯示（使用 code block 保持格式）
-        message_placeholder.code("\n".join(messages), language="")
+        # 只顯示最後 3 筆訊息（除非有錯誤）
+        if "❌" in message or "⚠️" in message:
+            # 錯誤訊息顯示全部
+            message_placeholder.code("\n".join(messages), language="")
+        else:
+            # 正常訊息只顯示最後 3 筆
+            message_placeholder.code("\n".join(messages[-3:]), language="")
         
         # 更新進度條
         if progress is not None:
@@ -261,21 +262,60 @@ def _run_sync(sync_manager: IncrementalSyncManager):
 
 
 def _run_full_resync(sync_manager: IncrementalSyncManager):
-    """執行完整重新同步（危險操作）"""
-    st.warning("⚠️ 這將重置同步狀態，重新處理所有檔案！")
+    """執行完整重新同步"""
+    st.warning("⚠️ 這將重新下載並上傳 FTP 上的所有檔案！")
+    st.info("📝 如果 Google Drive 已有相同檔案，將會覆寫")
     
-    if st.button("⚠️ 確認重新同步", type="secondary"):
+    if st.button("⚠️ 確認重新同步全部", type="secondary"):
         try:
+            st.subheader("🔄 執行重新同步")
+            
+            # 進度容器
+            progress_bar = st.progress(0)
+            message_placeholder = st.empty()
+            messages = []
+            
+            def progress_callback(message, progress=None):
+                """進度回調"""
+                messages.append(message)
+                # 只顯示最後 3 筆訊息（除非有錯誤）
+                if "❌" in message or "⚠️" in message:
+                    # 錯誤訊息顯示全部
+                    message_placeholder.code("\n".join(messages), language="")
+                else:
+                    # 正常訊息只顯示最後 3 筆
+                    message_placeholder.code("\n".join(messages[-3:]), language="")
+                
+                if progress is not None:
+                    progress_bar.progress(progress)
+            
             # 重置狀態
+            if progress_callback:
+                progress_callback("🔄 重置同步狀態...")
             sync_manager.reset_status()
             
-            st.success("✅ 同步狀態已重置")
-            st.info("點選「檢查新檔案並同步」開始重新同步")
+            # 執行完整同步
+            if progress_callback:
+                progress_callback("📥 開始完整同步...")
+            result = sync_manager.sync(progress_callback)
+            
+            # 完成
+            progress_bar.progress(1.0)
+            
+            # 顯示結果
+            st.success(
+                f"✅ 重新同步完成！\n"
+                f"- FTP 總檔案: {result['total_files']}\n"
+                f"- 處理檔案: {result['processed_files']}\n"
+                f"- 上傳檔案: {result.get('uploaded_files', 0)}\n"
+                f"- 錯誤: {result['errors']}"
+            )
             
             # 清除快取
             if 'sync_manager' in st.session_state:
                 del st.session_state.sync_manager
-            st.rerun()
             
         except Exception as e:
-            st.error(f"❌ 重置失敗: {e}")
+            st.error(f"❌ 重新同步失敗: {e}")
+            st.exception(e)
+
