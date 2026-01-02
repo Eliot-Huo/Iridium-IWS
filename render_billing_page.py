@@ -573,19 +573,32 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                                     
                                     # 檢查是否在日期範圍內
                                     if start_date <= call_datetime.date() <= end_date:
-                                        # 提取資料量
+                                        # 提取資料量（bytes）
                                         data_volume_bytes = record.raw_data[135:145]
                                         try:
-                                            data_volume = int(data_volume_bytes.decode('ascii', errors='ignore').strip() or '0')
+                                            data_bytes = int(data_volume_bytes.decode('ascii', errors='ignore').strip() or '0')
                                         except:
-                                            data_volume = 0
+                                            data_bytes = 0
+                                        
+                                        # 轉換為 MB
+                                        data_mb = data_bytes / (1024 * 1024)
+                                        
+                                        # 提取服務類型碼（位置 85-87）
+                                        service_code = record.raw_data[85:87].decode('ascii', errors='ignore').strip()
                                         
                                         # 創建記錄
                                         cdr_record = SimpleCDRRecord(
                                             imei=record_imei,
                                             call_datetime=call_datetime,
-                                            data_volume=data_volume,
-                                            raw_data=record.raw_data
+                                            duration_seconds=0,  # TAP II 沒有通話時長
+                                            data_mb=data_mb,
+                                            call_type='SBD',  # 預設為 SBD
+                                            service_code=service_code,
+                                            destination='',
+                                            cost=0.0,  # 稍後計算
+                                            location_country='',
+                                            cell_id='',
+                                            msc_id=''
                                         )
                                         all_records.append(cdr_record)
                     
