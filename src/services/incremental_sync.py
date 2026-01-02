@@ -346,14 +346,33 @@ class IncrementalSyncManager:
             return
         
         try:
+            # 確保資料可以序列化
+            status_dict = status.to_dict()
+            
+            # 檢查並清理資料（確保沒有 date 物件）
+            status_dict = self._ensure_json_serializable(status_dict)
+            
             # 上傳到 Google Drive
-            content = json.dumps(status.to_dict(), indent=2, ensure_ascii=False)
+            content = json.dumps(status_dict, indent=2, ensure_ascii=False)
             self.gdrive.upload_text_file(self.STATUS_FILENAME, content)
         except Exception as e:
             # 保存失敗，記錄錯誤
             print(f"⚠️ 保存同步狀態失敗: {e}")
             # 備份到本地
             self._save_local_status(status)
+    
+    def _ensure_json_serializable(self, obj):
+        """確保物件可以 JSON 序列化"""
+        if isinstance(obj, dict):
+            return {k: self._ensure_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._ensure_json_serializable(item) for item in obj]
+        elif isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        elif isinstance(obj, set):
+            return sorted(list(obj))
+        else:
+            return obj
     
     def _load_local_status(self) -> SyncStatus:
         """從本地載入狀態"""

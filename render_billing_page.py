@@ -14,8 +14,11 @@ from datetime import date, datetime
 import calendar
 
 from src.infrastructure.iws_gateway import IWSGateway
+from src.infrastructure.ftp_client import FTPClient
+from src.infrastructure.gdrive_client import GoogleDriveClient, GDRIVE_AVAILABLE
 from src.services.billing_service import BillingService
 from src.services.cdr_service import CDRService
+from src.services.incremental_sync import IncrementalSyncManager
 
 
 def render_billing_query_page(gateway: IWSGateway):
@@ -184,21 +187,32 @@ def render_billing_query_page(gateway: IWSGateway):
                 
             except Exception as e:
                 error_msg = str(e)
-                st.error(f"❌ 查詢失敗: {error_msg}")
                 
-                # 根據錯誤類型提供建議
+                # 檢查是否是資料不存在的錯誤
                 if "找不到" in error_msg or "不存在" in error_msg or "No data" in error_msg:
-                    st.warning("""
-                    **💡 資料不存在？**
+                    st.warning("⚠️ CDR 資料不存在，嘗試自動同步...")
                     
-                    可能原因：
-                    1. 該月份尚未執行 CDR 同步
-                    2. Google Drive 資料夾中沒有對應檔案
+                    # 嘗試自動同步
+                    sync_success = _auto_sync_cdr(year, month)
                     
-                    **解決方法：**
-                    - 請到「CDR 同步管理」頁面執行同步
-                    - 或到「CDR 帳單查詢」頁面查詢（助理功能）
-                    """)
+                    if sync_success:
+                        st.success("✅ 同步完成！重新查詢...")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ 自動同步失敗")
+                        st.warning("""
+                        **💡 無法自動同步**
+                        
+                        請檢查：
+                        1. FTP 連線設定是否正確
+                        2. Google Drive 設定是否正確
+                        
+                        **解決方法：**
+                        - 請到「CDR 同步管理」頁面手動執行同步
+                        - 或到「CDR 帳單查詢」頁面查詢（助理功能）
+                        """)
+                else:
+                    st.error(f"❌ 查詢失敗: {error_msg}")
                 
                 with st.expander("🔍 詳細錯誤訊息"):
                     st.exception(e)
@@ -318,3 +332,84 @@ def render_range_bill(result, imei: str, query_date: str):
             
             with col4:
                 st.metric("訊息數", f"{monthly_bill.message_count} 則")
+
+
+def _auto_sync_cdr(year: int, month: int) -> bool:
+    """
+    自動同步指定月份的 CDR 資料
+    
+    Args:
+        year: 年份
+        month: 月份
+        
+    Returns:
+        是否成功
+    """
+    try:
+        # 檢查設定
+        if 'FTP_HOST' not in st.secrets or 'FTP_USERNAME' not in st.secrets or 'FTP_PASSWORD' not in st.secrets:
+            st.error("❌ FTP 設定不完整")
+            return False
+        
+        if not GDRIVE_AVAILABLE:
+            st.error("❌ Google Drive 不可用")
+            return False
+        
+        if 'gcp_service_account' not in st.secrets and 'GCP_SERVICE_ACCOUNT_JSON' not in st.secrets:
+            st.error("❌ Google Drive 設定不完整")
+            return False
+        
+        # 初始化客戶端
+        with st.spinner(f"📡 連接 FTP 和 Google Drive..."):
+            ftp_client = FTPClient(
+                host=st.secrets['FTP_HOST'],
+                username=st.secrets['FTP_USERNAME'],
+                password=st.secrets['FTP_PASSWORD']
+            )
+            ftp_client.connect()
+            
+            # Google Drive 設定
+            if 'gcp_service_account' in st.secrets:
+                gdrive_config = {
+                    'service_account_info': dict(st.secrets.gcp_service_account),
+                    'root_folder_name': 'CDR_Files'
+                }
+            else:
+                gdrive_config = {
+                    'service_account_json': st.secrets['GCP_SERVICE_ACCOUNT_JSON'],
+                    'root_folder_name': 'CDR_Files'
+                }
+            
+            if 'GCP_CDR_FOLDER_ID' in st.secrets:
+                gdrive_config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
+            
+            gdrive_client = GoogleDriveClient(**gdrive_config)
+            
+            # 執行同步
+            sync_manager = IncrementalSyncManager(ftp_client, gdrive_client)
+        
+        with st.spinner(f"📥 同步 {year}/{month:02d} 的 CDR 檔案..."):
+            # 使用簡單的進度回調
+            messages = []
+            def progress_callback(message, progress=None):
+                messages.append(message)
+                if len(messages) <= 3:
+                    st.info(message)
+            
+            result = sync_manager.sync(progress_callback)
+            
+            if result['errors'] == 0:
+                st.success(f"✅ 同步完成！處理了 {result['processed_files']} 個檔案")
+                return True
+            else:
+                st.warning(f"⚠️ 同步完成但有 {result['errors']} 個錯誤")
+                return False
+    
+    except Exception as e:
+        st.error(f"❌ 自動同步失敗: {e}")
+        return False
+    finally:
+        try:
+            ftp_client.disconnect()
+        except:
+            pass
