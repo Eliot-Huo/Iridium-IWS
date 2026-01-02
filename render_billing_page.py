@@ -292,7 +292,7 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         st.metric("超量費", f"${bill.overage_cost:.2f}")
     
     with col4:
-        st.metric("其他費用", f"${bill.mailbox_check_cost + bill.registration_cost:.2f}")
+        st.metric("其他費用", f"${bill.mailbox_cost + bill.registration_cost:.2f}")
     
     # 使用量明細
     st.markdown("---")
@@ -304,7 +304,6 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         st.markdown(f"""
         **方案資訊**：
         - 方案：{bill.plan_name}
-        - 帳號狀態：{bill.account_status}
         - 月租費：${bill.monthly_rate:.2f}
         - 包含流量：{bill.included_bytes:,} bytes
         """)
@@ -312,11 +311,11 @@ def render_monthly_bill(bill, imei: str, query_date: str):
     with col2:
         st.markdown(f"""
         **使用統計**：
-        - 總用量：{bill.total_usage_bytes:,} bytes
-        - 超量：{bill.overage_bytes:,} bytes
+        - 總用量：{bill.total_bytes:,} bytes
+        - 計費用量：{bill.billable_bytes:,} bytes
         - 訊息數：{bill.message_count} 則
-        - Mailbox Check：{bill.mailbox_check_count} 次
-        - Registration：{bill.registration_count} 次
+        - Mailbox Check：{bill.mailbox_checks} 次
+        - Registration：{bill.registrations} 次
         """)
     
     # 通訊記錄
