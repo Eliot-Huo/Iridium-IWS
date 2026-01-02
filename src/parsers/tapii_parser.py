@@ -219,6 +219,46 @@ class TAPIIParser:
         
         return months
     
+    def extract_dates(self, filepath: str) -> Set[str]:
+        """
+        從 CDR 檔案提取所有出現的日期
+        
+        Args:
+            filepath: 檔案路徑
+            
+        Returns:
+            日期集合（格式：YYYYMMDD，例如 "20251013"）
+            
+        Example:
+            >>> parser = TAPIIParser()
+            >>> dates = parser.extract_dates('cdr_file.dat')
+            >>> print(dates)
+            {'20251013', '20251014'}  # 跨日檔案
+        """
+        dates = set()
+        
+        # 解析檔案
+        records = self.parse_file(filepath)
+        
+        # 優先從 Data Records (Type 20) 提取日期
+        for record in records:
+            if record.record_type == self.TYPE_DATA and record.charging_date:
+                # 將 YYMMDD 轉換為 YYYYMMDD
+                date_str = self._convert_to_date(record.charging_date)
+                if date_str:
+                    dates.add(date_str)
+        
+        # 如果沒有 Data Records，從 Header (Type 10) 提取檔案建立日期
+        if not dates:
+            for record in records:
+                if record.record_type == self.TYPE_HEADER and record.file_creation_date:
+                    date_str = self._convert_to_date(record.file_creation_date)
+                    if date_str:
+                        dates.add(date_str)
+                        break
+        
+        return dates
+    
     def _convert_to_month(self, yymmdd: str) -> Optional[str]:
         """
         將 YYMMDD 轉換為 YYYYMM
@@ -251,6 +291,44 @@ class TAPIIParser:
                 return None
             
             return yyyy + mm
+            
+        except:
+            return None
+    
+    def _convert_to_date(self, yymmdd: str) -> Optional[str]:
+        """
+        將 YYMMDD 轉換為 YYYYMMDD
+        
+        Args:
+            yymmdd: 日期字串（YYMMDD）
+            
+        Returns:
+            日期字串（YYYYMMDD），或 None（無效日期）
+            
+        Example:
+            >>> parser._convert_to_date('251231')
+            '20251231'
+            >>> parser._convert_to_date('260101')
+            '20260101'
+        """
+        if not yymmdd or len(yymmdd) != 6:
+            return None
+        
+        try:
+            yy = yymmdd[0:2]
+            mm = yymmdd[2:4]
+            dd = yymmdd[4:6]
+            
+            # 假設 YY >= 20 是 20XX，否則是 19XX
+            yyyy = '20' + yy if int(yy) >= 20 else '19' + yy
+            
+            # 驗證月份和日期
+            if not (1 <= int(mm) <= 12):
+                return None
+            if not (1 <= int(dd) <= 31):
+                return None
+            
+            return yyyy + mm + dd
             
         except:
             return None

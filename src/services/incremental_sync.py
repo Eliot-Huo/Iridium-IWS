@@ -259,41 +259,44 @@ class IncrementalSyncManager:
         with open(local_path, 'wb') as f:
             f.write(file_content)
         
-        # 2. 解析月份
-        months = self.parser.extract_months(local_path)
+        # 2. 解析日期（改為按日）
+        dates = self.parser.extract_dates(local_path)
+        months = self.parser.extract_months(local_path)  # 保留月份資訊用於統計
         record_count = self.parser.count_records(local_path)
         file_size = os.path.getsize(local_path)
         
-        # 3. 上傳到 Google Drive（如果可用）
+        # 3. 上傳到 Google Drive（按日上傳）
         uploaded_to = []
-        upload_errors = []  # 收集上傳錯誤
+        upload_errors = []
         
         if self.gdrive and GDRIVE_AVAILABLE:
-            for month_str in months:
+            for date_str in dates:
                 try:
-                    # 將 YYYYMM 轉換為 date 物件
-                    # 例如 '202512' -> date(2025, 12, 1)
-                    year = int(month_str[:4])
-                    month = int(month_str[4:6])
-                    file_date = date(year, month, 1)
+                    # 將 YYYYMMDD 轉換為 date 物件
+                    # 例如 '20251213' -> date(2025, 12, 13)
+                    year = int(date_str[:4])
+                    month = int(date_str[4:6])
+                    day = int(date_str[6:8])
+                    file_date = date(year, month, day)
                     
-                    # 上傳到對應年/月資料夾（例如：2025/12/）
+                    # 上傳到對應年/月/日資料夾（例如：2025/12/13/）
                     upload_result = self.gdrive.upload_file(
                         local_path=local_path,
                         file_date=file_date,
-                        filename=filename
+                        filename=filename,
+                        use_day_folder=True  # 使用日期資料夾
                     )
-                    uploaded_to.append(f"{year}/{month:02d}")
+                    uploaded_to.append(f"{year}/{month:02d}/{day:02d}")
                     
                     # 記錄上傳成功
-                    print(f"✅ 上傳成功到 {year}/{month:02d}: {upload_result.get('name')}")
+                    print(f"✅ 上傳成功到 {year}/{month:02d}/{day:02d}: {upload_result.get('name')}")
                 
                 except Exception as upload_error:
                     # 記錄上傳錯誤
-                    error_msg = f"上傳到 {year}/{month:02d} 失敗: {str(upload_error)}"
+                    error_msg = f"上傳到 {year}/{month:02d}/{day:02d} 失敗: {str(upload_error)}"
                     upload_errors.append(error_msg)
                     print(f"❌ {error_msg}")
-                    # 繼續處理其他月份
+                    # 繼續處理其他日期
         else:
             # Google Drive 不可用
             print(f"⚠️ Google Drive 不可用: gdrive={self.gdrive}, GDRIVE_AVAILABLE={GDRIVE_AVAILABLE}")
@@ -306,10 +309,11 @@ class IncrementalSyncManager:
         return {
             'processed_at': datetime.now().isoformat(),
             'file_size': file_size,
-            'months': sorted(list(months)),
+            'dates': sorted(list(dates)),  # 新增：日期列表
+            'months': sorted(list(months)),  # 保留：月份列表（用於統計）
             'record_count': record_count,
             'uploaded_to_gdrive': uploaded_to,
-            'upload_errors': upload_errors  # 新增：上傳錯誤列表
+            'upload_errors': upload_errors
         }
     
     def _list_ftp_files(self) -> List[str]:

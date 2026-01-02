@@ -193,10 +193,36 @@ class GoogleDriveClient:
         
         return month_folder_id
     
+    def get_day_folder_id(self, file_date: date) -> str:
+        """
+        取得日期資料夾 ID（自動建立 YYYY/MM/DD 結構）
+        
+        Args:
+            file_date: 檔案日期
+            
+        Returns:
+            日期資料夾 ID
+            
+        Example:
+            >>> folder_id = client.get_day_folder_id(date(2025, 1, 15))
+            >>> # 會建立 CDR_Files/2025/01/15/
+        """
+        # 先取得月份資料夾
+        month_folder_id = self.get_month_folder_id(file_date)
+        
+        # 建立日期資料夾
+        day_folder_id = self._get_or_create_folder(
+            f"{file_date.day:02d}",
+            month_folder_id
+        )
+        
+        return day_folder_id
+    
     def upload_file(self,
                    local_path: str,
                    file_date: date,
-                   filename: Optional[str] = None) -> Dict[str, str]:
+                   filename: Optional[str] = None,
+                   use_day_folder: bool = True) -> Dict[str, str]:
         """
         上傳檔案到 Google Drive
         
@@ -204,16 +230,25 @@ class GoogleDriveClient:
             local_path: 本地檔案路徑
             file_date: 檔案日期（用於決定資料夾）
             filename: 自訂檔案名稱（預設使用原檔名）
+            use_day_folder: 是否使用日期資料夾（True: YYYY/MM/DD, False: YYYY/MM）
             
         Returns:
             {'id': 檔案ID, 'name': 檔案名稱, 'webViewLink': 連結}
             
         Example:
+            >>> # 按日上傳到 2025/01/30/
             >>> result = client.upload_file(
-            ...     local_path='./cdr_20250130_00.dat',
-            ...     file_date=date(2025, 1, 30)
+            ...     local_path='./cdr_file.dat',
+            ...     file_date=date(2025, 1, 30),
+            ...     use_day_folder=True
             ... )
-            >>> print(f"已上傳: {result['webViewLink']}")
+            
+            >>> # 按月上傳到 2025/01/（向後兼容）
+            >>> result = client.upload_file(
+            ...     local_path='./cdr_file.dat',
+            ...     file_date=date(2025, 1, 30),
+            ...     use_day_folder=False
+            ... )
         """
         local_path = Path(local_path)
         if not local_path.exists():
@@ -222,8 +257,11 @@ class GoogleDriveClient:
         # 確定檔案名稱
         filename = filename or local_path.name
         
-        # 取得月份資料夾
-        folder_id = self.get_month_folder_id(file_date)
+        # 取得目標資料夾（按日或按月）
+        if use_day_folder:
+            folder_id = self.get_day_folder_id(file_date)
+        else:
+            folder_id = self.get_month_folder_id(file_date)
         
         # 檢查檔案是否已存在
         existing_file = self.find_file(filename, folder_id)

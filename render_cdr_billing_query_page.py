@@ -80,16 +80,8 @@ def render_cdr_billing_query_page():
     if st.button("🔎 查詢帳單", type="primary", disabled=not imei):
         with st.spinner("查詢中..."):
             try:
-                # 1. 初始化客戶端
+                # 1. 初始化 Google Drive 客戶端
                 gdrive = GoogleDriveClient(**gdrive_config)
-                
-                gateway = IWSGateway(
-                    username=st.secrets.get('IWS_USER', ''),
-                    password=st.secrets.get('IWS_PASS', ''),
-                    sp_account=st.secrets.get('IWS_SP_ACCOUNT', '')
-                )
-                
-                billing_service = BillingService(gateway)
                 
                 # 2. 檢查是否需要從 FTP 下載
                 st.info(f"🔍 檢查 {year}/{month:02d} 的 CDR 檔案...")
@@ -127,18 +119,14 @@ def render_cdr_billing_query_page():
                 
                 st.success(f"✅ 找到 {len(cdr_records)} 筆通訊記錄")
                 
-                # 4. 查詢月帳單
-                st.info("💰 計算費用中...")
+                # 4. 統計 CDR 用量（不查詢 IWS）
+                st.info("📊 統計用量中...")
                 
-                bill = billing_service.query_monthly_bill(
-                    imei=imei,
-                    year=year,
-                    month=month,
-                    cdr_records=cdr_records
-                )
+                # 直接從 CDR 統計，不需要查詢 IWS
+                usage_stats = _calculate_usage_from_cdr(cdr_records, year, month)
                 
-                # 5. 顯示帳單
-                _display_bill(bill, imei, year, month)
+                # 5. 顯示統計結果
+                _display_usage_stats(usage_stats, imei, year, month)
                 
             except BillingServiceException as e:
                 st.error(f"❌ 查詢失敗: {e}")
@@ -572,6 +560,139 @@ def _get_gdrive_config() -> dict:
     except Exception as e:
         st.error(f"❌ 讀取 Google Drive 設定失敗: {e}")
         return None
+
+
+def _calculate_usage_from_cdr(cdr_records: list, year: int, month: int) -> dict:
+    """
+    從 CDR 記錄統計用量（不查詢 IWS）
+    
+    Args:
+        cdr_records: CDR 記錄列表
+        year: 年份
+        month: 月份
+        
+    Returns:
+        用量統計
+    """
+    # 統計各類用量
+    mo_count = 0  # MO (Mobile Originated) - 發送
+    mt_count = 0  # MT (Mobile Terminated) - 接收
+    total_bytes = 0
+    
+    # 服務類型統計
+    service_stats = {}
+    
+    for record in cdr_records:
+        # 統計訊息數
+        if hasattr(record, 'direction'):
+            if record.direction == 'MO':
+                mo_count += 1
+            elif record.direction == 'MT':
+                mt_count += 1
+        
+        # 統計流量
+        if hasattr(record, 'data_volume'):
+            total_bytes += record.data_volume
+        elif hasattr(record, 'message_size'):
+            total_bytes += record.message_size
+        
+        # 統計服務類型
+        if hasattr(record, 'service_type'):
+            service_type = record.service_type
+            if service_type not in service_stats:
+                service_stats[service_type] = 0
+            service_stats[service_type] += 1
+    
+    return {
+        'year': year,
+        'month': month,
+        'total_records': len(cdr_records),
+        'mo_count': mo_count,
+        'mt_count': mt_count,
+        'total_bytes': total_bytes,
+        'service_stats': service_stats,
+        'records': cdr_records
+    }
+
+
+def _display_usage_stats(stats: dict, imei: str, year: int, month: int):
+    """
+    顯示用量統計
+    
+    Args:
+        stats: 用量統計
+        imei: IMEI
+        year: 年份
+        month: 月份
+    """
+    st.success("✅ 統計完成！")
+    
+    st.markdown("---")
+    st.subheader(f"📊 {imei} - {year}/{month:02d} 用量統計")
+    
+    # 總覽
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("總記錄數", f"{stats['total_records']:,}")
+    
+    with col2:
+        st.metric("發送 (MO)", f"{stats['mo_count']:,}")
+    
+    with col3:
+        st.metric("接收 (MT)", f"{stats['mt_count']:,}")
+    
+    with col4:
+        st.metric("總流量", f"{stats['total_bytes']:,} bytes")
+    
+    # 服務類型統計
+    if stats['service_stats']:
+        st.markdown("---")
+        st.subheader("📈 服務類型統計")
+        
+        import pandas as pd
+        service_df = pd.DataFrame([
+            {'服務類型': k, '次數': v}
+            for k, v in sorted(stats['service_stats'].items(), key=lambda x: x[1], reverse=True)
+        ])
+        st.dataframe(service_df, use_container_width=True, hide_index=True)
+    
+    # 通訊記錄
+    if stats['records']:
+        st.markdown("---")
+        st.subheader(f"📋 通訊記錄（共 {len(stats['records'])} 筆）")
+        
+        # 轉換為 DataFrame
+        records_data = []
+        for record in stats['records']:
+            record_dict = {
+                '時間': getattr(record, 'timestamp', getattr(record, 'call_start_time', 'N/A')),
+                '方向': getattr(record, 'direction', 'N/A'),
+                '服務類型': getattr(record, 'service_type', 'N/A'),
+            }
+            
+            # 流量
+            if hasattr(record, 'data_volume'):
+                record_dict['流量 (bytes)'] = record.data_volume
+            elif hasattr(record, 'message_size'):
+                record_dict['流量 (bytes)'] = record.message_size
+            else:
+                record_dict['流量 (bytes)'] = 0
+            
+            records_data.append(record_dict)
+        
+        import pandas as pd
+        df = pd.DataFrame(records_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # 下載按鈕
+        csv = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 下載 CSV",
+            data=csv,
+            file_name=f"CDR_{imei}_{year}{month:02d}.csv",
+            mime="text/csv"
+        )
 
 
 if __name__ == "__main__":
