@@ -59,11 +59,11 @@ def render_billing_query_page(gateway: IWSGateway):
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        imei = st.text_input(
+        imei_input = st.text_area(
             "IMEI",
-            placeholder="請輸入 15 位 IMEI 號碼",
-            max_chars=15,
-            help="設備的唯一識別碼"
+            placeholder="請輸入 IMEI（支援多個，每行一個）\n例如：\n300534066711380\n300534066716260",
+            height=100,
+            help="支援單個或多個 IMEI，多個 IMEI 請換行輸入"
         )
     
     with col2:
@@ -143,6 +143,16 @@ def render_billing_query_page(gateway: IWSGateway):
     
     st.markdown("---")
     
+    # 解析 IMEI 列表
+    imei_list = []
+    if imei_input:
+        imei_list = [line.strip() for line in imei_input.strip().split('\n') if line.strip()]
+        # 驗證每個 IMEI
+        invalid_imeis = [imei for imei in imei_list if len(imei) != 15]
+        if invalid_imeis:
+            st.error(f"❌ 以下 IMEI 不是 15 位：{', '.join(invalid_imeis)}")
+            imei_list = []
+    
     col1, col2, col3 = st.columns([1, 1, 1])
     
     with col2:
@@ -150,93 +160,115 @@ def render_billing_query_page(gateway: IWSGateway):
             "🔍 查詢費用",
             type="primary",
             use_container_width=True,
-            disabled=not imei or len(imei) != 15
+            disabled=len(imei_list) == 0
         )
     
     # ==================== 執行查詢 ====================
     
     if query_button:
-        if not imei or len(imei) != 15:
-            st.error("❌ 請輸入有效的 15 位 IMEI")
+        if len(imei_list) == 0:
+            st.error("❌ 請輸入至少一個有效的 15 位 IMEI")
             return
+        
+        st.info(f"📋 查詢 {len(imei_list)} 個 IMEI")
         
         with st.spinner("🔍 查詢中..."):
             try:
-                # 查詢費用
-                if query_mode == "單月查詢":
-                    # 單月查詢：載入整月的 CDR
-                    st.info(f"📥 載入 {year}/{month:02d} 的 CDR...")
-                    
-                    month_start = date(year, month, 1)
-                    if month == 12:
-                        month_end = date(year + 1, 1, 1) - timedelta(days=1)
-                    else:
-                        month_end = date(year, month + 1, 1) - timedelta(days=1)
-                    
-                    cdr_records = _load_cdr_for_date_range(imei, month_start, month_end)
-                    
-                    if cdr_records is None:
-                        return
-                    
-                    result = billing_service.query_monthly_bill(
-                        imei=imei,
-                        year=year,
-                        month=month,
-                        cdr_records=cdr_records
-                    )
-                    
-                    if result:
-                        render_monthly_bill(result, imei, query_date_str)
+                # 查詢每個 IMEI 的費用
+                all_results = {}
                 
-                else:
-                    # 區間查詢：載入日期區間的 CDR
-                    st.info(f"📥 載入 {start_date.strftime('%Y/%m/%d')} ~ {end_date.strftime('%Y/%m/%d')} 的 CDR...")
+                for idx, imei in enumerate(imei_list, 1):
+                    st.write(f"### IMEI {idx}/{len(imei_list)}: {imei}")
                     
-                    cdr_records = _load_cdr_for_date_range(imei, start_date, end_date)
+                    try:
+                        # 查詢費用
+                        if query_mode == "單月查詢":
+                            # 單月查詢：載入整月的 CDR（但不超過今天）
+                            st.info(f"📥 載入 {year}/{month:02d} 的 CDR...")
+                            
+                            month_start = date(year, month, 1)
+                            if month == 12:
+                                month_end = date(year + 1, 1, 1) - timedelta(days=1)
+                            else:
+                                month_end = date(year, month + 1, 1) - timedelta(days=1)
+                            
+                            # 不超過今天
+                            today = date.today()
+                            if month_end > today:
+                                month_end = today
+                            
+                            cdr_records = _load_cdr_for_date_range(imei, month_start, month_end)
+                            
+                            if cdr_records is None:
+                                st.warning(f"⚠️ IMEI {imei} 沒有找到記錄")
+                                continue
+                            
+                            result = billing_service.query_monthly_bill(
+                                imei=imei,
+                                year=year,
+                                month=month,
+                                cdr_records=cdr_records
+                            )
+                            
+                            if result:
+                                all_results[imei] = result
+                                render_monthly_bill(result, imei, query_date_str)
+                        
+                        else:
+                            # 區間查詢：載入日期區間的 CDR
+                            st.info(f"📥 載入 {start_date.strftime('%Y/%m/%d')} ~ {end_date.strftime('%Y/%m/%d')} 的 CDR...")
+                            
+                            cdr_records = _load_cdr_for_date_range(imei, start_date, end_date)
+                            
+                            if cdr_records is None:
+                                st.warning(f"⚠️ IMEI {imei} 沒有找到記錄")
+                                continue
+                            
+                            result = billing_service.query_date_range_bill(
+                                imei=imei,
+                                start_date=start_date,
+                                end_date=end_date,
+                                cdr_records=cdr_records
+                            )
+                            
+                            if result:
+                                all_results[imei] = result
+                                render_range_bill(result, imei, query_date_str)
                     
-                    if cdr_records is None:
-                        return
+                    except Exception as imei_error:
+                        st.error(f"❌ IMEI {imei} 查詢失敗: {imei_error}")
+                        with st.expander("🐛 詳細錯誤"):
+                            st.exception(imei_error)
+                
+                # 顯示匯總
+                if len(all_results) > 1:
+                    st.markdown("---")
+                    st.subheader("📊 匯總統計")
                     
-                    result = billing_service.query_date_range_bill(
-                        imei=imei,
-                        start_date=start_date,
-                        end_date=end_date,
-                        cdr_records=cdr_records
+                    total_cost = sum(
+                        result.total_cost if hasattr(result, 'total_cost') 
+                        else result.get('total_cost', 0)
+                        for result in all_results.values()
                     )
                     
-                    if result:
-                        render_range_bill(result, imei, query_date_str)
+                    st.metric("總費用", f"${total_cost:.2f}")
+                    
+                    # 顯示各 IMEI 的費用
+                    summary_data = []
+                    for imei, result in all_results.items():
+                        cost = result.total_cost if hasattr(result, 'total_cost') else result.get('total_cost', 0)
+                        summary_data.append({
+                            'IMEI': imei,
+                            '費用': f"${cost:.2f}"
+                        })
+                    
+                    df = pd.DataFrame(summary_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                 
             except Exception as e:
-                error_msg = str(e)
-                
-                # 檢查是否是資料不存在的錯誤
-                if "找不到" in error_msg or "不存在" in error_msg or "No data" in error_msg:
-                    st.warning("⚠️ CDR 資料不存在，嘗試自動同步...")
-                    
-                    # 嘗試自動同步
-                    sync_success = _auto_sync_cdr(year, month)
-                    
-                    if sync_success:
-                        st.success("✅ 同步完成！重新查詢...")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ 自動同步失敗")
-                        st.warning("""
-                        **💡 無法自動同步**
-                        
-                        請檢查：
-                        1. FTP 連線設定是否正確
-                        2. Google Drive 設定是否正確
-                        
-                        **解決方法：**
-                        - 請到「CDR 同步管理」頁面手動執行同步
-                        - 或到「CDR 帳單查詢」頁面查詢（助理功能）
-                        """)
-                else:
-                    st.error(f"❌ 查詢失敗: {error_msg}")
-                
+                st.error(f"❌ 查詢失敗: {e}")
                 with st.expander("🔍 詳細錯誤訊息"):
+                    st.exception(e)
                     st.exception(e)
 
 
@@ -525,8 +557,8 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                     
                     for record in records:
                         if record.record_type == parser.TYPE_DATA:
-                            # 提取 IMEI
-                            record_imei = record.raw_data[15:30].decode('ascii', errors='ignore').strip()
+                            # 提取 IMEI（位置 9-24，共 15 位）
+                            record_imei = record.raw_data[9:24].decode('ascii', errors='ignore').strip()
                             
                             if record_imei == imei:
                                 # 解析時間
