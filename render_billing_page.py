@@ -10,7 +10,7 @@
 """
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import calendar
 
 from src.infrastructure.iws_gateway import IWSGateway
@@ -164,22 +164,44 @@ def render_billing_query_page(gateway: IWSGateway):
             try:
                 # 查詢費用
                 if query_mode == "單月查詢":
+                    # 單月查詢：載入整月的 CDR
+                    st.info(f"📥 載入 {year}/{month:02d} 的 CDR...")
+                    
+                    month_start = date(year, month, 1)
+                    if month == 12:
+                        month_end = date(year + 1, 1, 1) - timedelta(days=1)
+                    else:
+                        month_end = date(year, month + 1, 1) - timedelta(days=1)
+                    
+                    cdr_records = _load_cdr_for_date_range(imei, month_start, month_end)
+                    
+                    if cdr_records is None:
+                        return
+                    
                     result = billing_service.query_monthly_bill(
                         imei=imei,
                         year=year,
                         month=month,
-                        cdr_records=None  # 讓 billing_service 自動載入
+                        cdr_records=cdr_records
                     )
                     
                     if result:
                         render_monthly_bill(result, imei, query_date_str)
                 
                 else:
+                    # 區間查詢：載入日期區間的 CDR
+                    st.info(f"📥 載入 {start_date.strftime('%Y/%m/%d')} ~ {end_date.strftime('%Y/%m/%d')} 的 CDR...")
+                    
+                    cdr_records = _load_cdr_for_date_range(imei, start_date, end_date)
+                    
+                    if cdr_records is None:
+                        return
+                    
                     result = billing_service.query_date_range_bill(
                         imei=imei,
                         start_date=start_date,
                         end_date=end_date,
-                        cdr_records=None  # 讓 billing_service 自動載入
+                        cdr_records=cdr_records
                     )
                     
                     if result:
@@ -413,3 +435,173 @@ def _auto_sync_cdr(year: int, month: int) -> bool:
             ftp_client.disconnect()
         except:
             pass
+
+
+def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
+    """
+    載入日期區間的 CDR 記錄
+    
+    Args:
+        imei: IMEI
+        start_date: 開始日期
+        end_date: 結束日期
+        
+    Returns:
+        CDR 記錄列表
+    """
+    try:
+        # 檢查 Google Drive 設定
+        if 'gcp_service_account' not in st.secrets and 'GCP_SERVICE_ACCOUNT_JSON' not in st.secrets:
+            st.error("❌ Google Drive 設定未完成")
+            return None
+        
+        # 初始化 Google Drive
+        if 'gcp_service_account' in st.secrets:
+            gdrive_config = {
+                'service_account_info': dict(st.secrets.gcp_service_account),
+                'root_folder_name': 'CDR_Files'
+            }
+        else:
+            gdrive_config = {
+                'service_account_json': st.secrets['GCP_SERVICE_ACCOUNT_JSON'],
+                'root_folder_name': 'CDR_Files'
+            }
+        
+        if 'GCP_CDR_FOLDER_ID' in st.secrets:
+            gdrive_config['root_folder_id'] = st.secrets['GCP_CDR_FOLDER_ID']
+        
+        gdrive = GoogleDriveClient(**gdrive_config)
+        
+        # 載入 CDR
+        from src.parsers.tapii_parser import TAPIIParser
+        from src.domain.cdr import SimpleCDRRecord
+        from datetime import timedelta
+        import tempfile
+        import os
+        
+        parser = TAPIIParser()
+        all_records = []
+        
+        # 迭代每一天
+        current_date = start_date
+        days_processed = 0
+        total_days = (end_date - start_date).days + 1
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        while current_date <= end_date:
+            try:
+                status_text.text(f"📥 載入 {current_date.strftime('%Y/%m/%d')} 的 CDR...")
+                
+                # 嘗試從按日資料夾載入
+                try:
+                    folder_id = gdrive.get_day_folder_id(current_date)
+                except:
+                    # 如果按日資料夾不存在，嘗試按月
+                    try:
+                        folder_id = gdrive.get_month_folder_id(current_date)
+                    except:
+                        # 該月份沒有資料，跳過
+                        current_date += timedelta(days=1)
+                        days_processed += 1
+                        progress_bar.progress(days_processed / total_days)
+                        continue
+                
+                # 列出檔案
+                files = gdrive.list_files(folder_id)
+                cdr_files = [f for f in files if f['name'].endswith('.dat')]
+                
+                # 下載並解析
+                for file_info in cdr_files:
+                    # 下載到臨時檔案
+                    temp_dir = tempfile.gettempdir()
+                    local_path = os.path.join(temp_dir, file_info['name'])
+                    
+                    gdrive.download_file(file_info['id'], local_path)
+                    
+                    # 解析並過濾
+                    records = parser.parse_file(local_path)
+                    
+                    for record in records:
+                        if record.record_type == parser.TYPE_DATA:
+                            # 提取 IMEI
+                            record_imei = record.raw_data[15:30].decode('ascii', errors='ignore').strip()
+                            
+                            if record_imei == imei:
+                                # 解析時間
+                                if record.charging_date and record.charging_time:
+                                    date_str = f"20{record.charging_date}"  # YYMMDD -> YYYYMMDD
+                                    time_str = record.charging_time
+                                    
+                                    call_datetime = datetime.strptime(
+                                        f"{date_str}{time_str}",
+                                        "%Y%m%d%H%M%S"
+                                    )
+                                    
+                                    # 檢查是否在日期範圍內
+                                    if start_date <= call_datetime.date() <= end_date:
+                                        # 提取資料量
+                                        data_volume_bytes = record.raw_data[135:145]
+                                        try:
+                                            data_volume = int(data_volume_bytes.decode('ascii', errors='ignore').strip() or '0')
+                                        except:
+                                            data_volume = 0
+                                        
+                                        # 創建記錄
+                                        cdr_record = SimpleCDRRecord(
+                                            imei=record_imei,
+                                            call_datetime=call_datetime,
+                                            data_volume=data_volume,
+                                            raw_data=record.raw_data
+                                        )
+                                        all_records.append(cdr_record)
+                    
+                    # 刪除臨時檔案
+                    try:
+                        os.remove(local_path)
+                    except:
+                        pass
+            
+            except Exception as day_error:
+                # 該日載入失敗，記錄但繼續
+                st.warning(f"⚠️ {current_date.strftime('%Y/%m/%d')} 載入失敗: {day_error}")
+            
+            current_date += timedelta(days=1)
+            days_processed += 1
+            progress_bar.progress(days_processed / total_days)
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        if not all_records:
+            st.warning(f"⚠️ 在日期區間內沒有找到 IMEI {imei} 的記錄")
+            
+            # 提示是否需要同步
+            if st.button("🔄 嘗試從 FTP 同步最新資料"):
+                # 同步涵蓋的月份
+                months_to_sync = set()
+                current = start_date
+                while current <= end_date:
+                    months_to_sync.add((current.year, current.month))
+                    if current.month == 12:
+                        current = date(current.year + 1, 1, 1)
+                    else:
+                        current = date(current.year, current.month + 1, 1)
+                
+                for year, month in sorted(months_to_sync):
+                    if _auto_sync_cdr(year, month):
+                        st.success(f"✅ {year}/{month:02d} 同步完成")
+                
+                st.info("💡 請重新執行查詢")
+            
+            return None
+        
+        st.success(f"✅ 載入了 {len(all_records)} 筆 CDR 記錄")
+        return all_records
+    
+    except Exception as e:
+        st.error(f"❌ 載入 CDR 失敗: {e}")
+        with st.expander("🐛 詳細錯誤"):
+            st.exception(e)
+        return None
