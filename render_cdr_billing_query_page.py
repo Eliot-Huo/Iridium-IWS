@@ -91,8 +91,28 @@ def render_cdr_billing_query_page():
                 
                 billing_service = BillingService(gateway)
                 
-                # 2. 從 Google Drive 下載 CDR 檔案
-                st.info(f"📥 正在從 Google Drive 下載 {year}/{month:02d} 的 CDR 檔案...")
+                # 2. 檢查是否需要從 FTP 下載
+                st.info(f"🔍 檢查 {year}/{month:02d} 的 CDR 檔案...")
+                
+                # 檢查 Google Drive 是否有該月份的資料
+                need_sync = _check_if_need_sync(gdrive, year, month)
+                
+                if need_sync:
+                    st.warning(f"⚠️ Google Drive 中沒有 {year}/{month:02d} 的資料")
+                    st.info(f"📥 正在從 FTP 下載最新的 CDR 檔案...")
+                    
+                    # 從 FTP 自動同步
+                    sync_result = _auto_sync_from_ftp(gdrive, year, month)
+                    
+                    if sync_result['success']:
+                        st.success(f"✅ 已下載並上傳 {sync_result['files_count']} 個檔案")
+                    else:
+                        st.error(f"❌ 自動同步失敗: {sync_result['error']}")
+                        st.info("💡 請到「CDR 同步管理」頁面手動執行同步")
+                        return
+                
+                # 3. 從 Google Drive 下載 CDR 檔案
+                st.info(f"📥 正在從 Google Drive 讀取 {year}/{month:02d} 的 CDR 檔案...")
                 
                 cdr_records = _download_and_parse_cdr(
                     gdrive=gdrive,
@@ -107,7 +127,7 @@ def render_cdr_billing_query_page():
                 
                 st.success(f"✅ 找到 {len(cdr_records)} 筆通訊記錄")
                 
-                # 3. 查詢月帳單
+                # 4. 查詢月帳單
                 st.info("💰 計算費用中...")
                 
                 bill = billing_service.query_monthly_bill(
@@ -117,7 +137,7 @@ def render_cdr_billing_query_page():
                     cdr_records=cdr_records
                 )
                 
-                # 4. 顯示帳單
+                # 5. 顯示帳單
                 _display_bill(bill, imei, year, month)
                 
             except BillingServiceException as e:
@@ -126,6 +146,120 @@ def render_cdr_billing_query_page():
                 st.error(f"❌ 系統錯誤: {e}")
                 with st.expander("🐛 詳細錯誤資訊"):
                     st.exception(e)
+
+
+def _check_if_need_sync(gdrive: GoogleDriveClient, year: int, month: int) -> bool:
+    """
+    檢查是否需要從 FTP 同步
+    
+    Args:
+        gdrive: Google Drive 客戶端
+        year: 年份
+        month: 月份
+        
+    Returns:
+        True: 需要同步（資料夾不存在或為空）
+        False: 不需要同步（已有資料）
+    """
+    try:
+        folder_date = date(year, month, 1)
+        folder_id = gdrive.get_month_folder_id(folder_date)
+        
+        # 檢查資料夾是否有檔案
+        files = gdrive.list_files(folder_id)
+        cdr_files = [f for f in files if f['name'].endswith('.dat')]
+        
+        return len(cdr_files) == 0
+        
+    except Exception:
+        # 資料夾不存在
+        return True
+
+
+def _auto_sync_from_ftp(gdrive: GoogleDriveClient, year: int, month: int) -> dict:
+    """
+    自動從 FTP 下載並同步指定月份的 CDR 檔案
+    
+    Args:
+        gdrive: Google Drive 客戶端
+        year: 年份
+        month: 月份
+        
+    Returns:
+        同步結果
+    """
+    from src.infrastructure.ftp_client import FTPClient
+    from src.parsers.tapii_parser import TAPIIParser
+    
+    try:
+        # 1. 初始化 FTP 客戶端
+        ftp = FTPClient(
+            host=st.secrets['FTP_HOST'],
+            username=st.secrets['FTP_USERNAME'],
+            password=st.secrets['FTP_PASSWORD'],
+            passive_mode=True
+        )
+        
+        # 2. 連接 FTP
+        ftp.connect()
+        
+        # 3. 列出所有 CDR 檔案
+        all_files = ftp.list_files()
+        
+        if not all_files:
+            return {
+                'success': False,
+                'error': 'FTP 上沒有檔案',
+                'files_count': 0
+            }
+        
+        # 4. 使用臨時目錄處理
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parser = TAPIIParser()
+            uploaded_count = 0
+            target_month_str = f"{year}{month:02d}"
+            
+            # 處理每個檔案
+            for filename, mod_time, size in all_files:
+                try:
+                    # 下載檔案
+                    local_path = os.path.join(temp_dir, filename)
+                    ftp.download_file(filename, local_path)
+                    
+                    # 解析檔案取得月份
+                    months = parser.extract_months(local_path)
+                    
+                    # 檢查是否包含目標月份
+                    if target_month_str in months:
+                        # 上傳到 Google Drive
+                        upload_result = gdrive.upload_to_month_folder(
+                            local_path=local_path,
+                            year=year,
+                            month=month
+                        )
+                        
+                        if upload_result:
+                            uploaded_count += 1
+                    
+                except Exception as e:
+                    # 跳過有問題的檔案
+                    continue
+        
+        # 5. 斷開 FTP
+        ftp.disconnect()
+        
+        return {
+            'success': True,
+            'files_count': uploaded_count,
+            'error': None
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'files_count': 0
+        }
 
 
 def _download_and_parse_cdr(gdrive: GoogleDriveClient,

@@ -159,40 +159,7 @@ def render_billing_query_page(gateway: IWSGateway):
         
         with st.spinner("🔍 查詢中..."):
             try:
-                # 從 Google Drive 下載對應月份的資料
-                from gdrive_download_helper import ensure_month_data_from_gdrive
-                
-                # 確保所需月份的資料存在
-                if query_mode == "單月查詢":
-                    st.info(f"📥 檢查 {year}/{month:02d} 的資料...")
-                    success = ensure_month_data_from_gdrive(year, month, st.write)
-                    
-                    if not success:
-                        st.error(
-                            f"❌ 無法載入 {year}/{month:02d} 的 CDR 資料\n\n"
-                            f"可能原因：\n"
-                            f"1. 該月份尚未執行 CDR 同步\n"
-                            f"2. Google Drive 設定錯誤\n\n"
-                            f"請先到「CDR 同步管理」執行同步"
-                        )
-                        return
-                else:
-                    # 日期區間查詢
-                    months_to_download = []
-                    current = start_date.replace(day=1)
-                    while current <= end_date:
-                        months_to_download.append((current.year, current.month))
-                        # 下一個月
-                        if current.month == 12:
-                            current = current.replace(year=current.year + 1, month=1)
-                        else:
-                            current = current.replace(month=current.month + 1)
-                    
-                    for y, m in months_to_download:
-                        st.info(f"📥 檢查 {y}/{m:02d} 的資料...")
-                        ensure_month_data_from_gdrive(y, m, st.write)
-                
-                # 查詢費用（billing_service 會自動從快取載入 CDR）
+                # 查詢費用
                 if query_mode == "單月查詢":
                     result = billing_service.query_monthly_bill(
                         imei=imei,
@@ -216,7 +183,23 @@ def render_billing_query_page(gateway: IWSGateway):
                         render_range_bill(result, imei, query_date_str)
                 
             except Exception as e:
-                st.error(f"❌ 查詢失敗: {str(e)}")
+                error_msg = str(e)
+                st.error(f"❌ 查詢失敗: {error_msg}")
+                
+                # 根據錯誤類型提供建議
+                if "找不到" in error_msg or "不存在" in error_msg or "No data" in error_msg:
+                    st.warning("""
+                    **💡 資料不存在？**
+                    
+                    可能原因：
+                    1. 該月份尚未執行 CDR 同步
+                    2. Google Drive 資料夾中沒有對應檔案
+                    
+                    **解決方法：**
+                    - 請到「CDR 同步管理」頁面執行同步
+                    - 或到「CDR 帳單查詢」頁面查詢（助理功能）
+                    """)
+                
                 with st.expander("🔍 詳細錯誤訊息"):
                     st.exception(e)
 
