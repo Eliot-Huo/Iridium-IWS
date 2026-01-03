@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 import calendar
+import json
 
 from src.infrastructure.iws_gateway import IWSGateway
 from src.infrastructure.ftp_client import FTPClient
@@ -329,18 +330,21 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         # 轉換為 DataFrame
         records_data = []
         for record in bill.records:
-            # 轉換為 bytes
+            # 轉換為 bytes（data_mb 已經是正確的 MB 值）
             data_bytes = int(record.data_mb * 1024 * 1024)
             累計用量 += data_bytes
             
             # 判斷是否超量
-            is_overage = 累計用量 > bill.included_bytes
+            if 累計用量 > bill.included_bytes:
+                overage_status = '是'
+            else:
+                overage_status = '內含流量'
             
             records_data.append({
                 '時間': record.call_datetime.strftime('%Y-%m-%d %H:%M:%S'),
                 '資費方案': bill.plan_name,
                 '資料量': f"{data_bytes} bytes",
-                '超量額度': '是' if is_overage else '否'
+                '超量額度': overage_status
             })
         
         df = pd.DataFrame(records_data)
@@ -522,6 +526,93 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
         parser = TAPIIParser()
         all_records = []
         
+        # 快取目錄設定
+        cache_dir = os.path.join(tempfile.gettempdir(), 'cdr_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        index_file = os.path.join(cache_dir, '.cache_index.json')
+        
+        def load_index():
+            """載入索引表"""
+            if os.path.exists(index_file):
+                try:
+                    with open(index_file, 'r') as f:
+                        return json.load(f)
+                except:
+                    return {}
+            return {}
+        
+        def save_index(index):
+            """保存索引表"""
+            try:
+                with open(index_file, 'w') as f:
+                    json.dump(index, f, indent=2)
+            except:
+                pass
+        
+        def extract_cdr_dates(filepath):
+            """提取 CDR 檔案的日期範圍（解析所有 Type 20 記錄）"""
+            try:
+                records = parser.parse_file(filepath)
+                dates = []
+                
+                for record in records:
+                    if record.record_type == parser.TYPE_DATA:
+                        if record.charging_date:
+                            # YYMMDD -> YYYYMMDD
+                            date_str = f"20{record.charging_date}"
+                            dates.append(date_str)
+                
+                if dates:
+                    return min(dates), max(dates)
+                else:
+                    # 無資料，使用檔名或當前日期
+                    return None, None
+            except:
+                return None, None
+        
+        def get_cache_size():
+            """計算快取目錄總大小（bytes），排除索引檔"""
+            total = 0
+            for f in os.listdir(cache_dir):
+                if f == '.cache_index.json':
+                    continue
+                fp = os.path.join(cache_dir, f)
+                if os.path.isfile(fp):
+                    total += os.path.getsize(fp)
+            return total
+        
+        def cleanup_cache(max_bytes=5 * 1024 * 1024):
+            """清理快取：按 CDR 內部日期刪除，直到 < 5MB"""
+            index = load_index()
+            
+            # 刪除到剛好低於 5MB
+            while get_cache_size() >= max_bytes:
+                if not index:
+                    break
+                
+                # 按 start_date 排序，找到日期最早的
+                oldest_file = min(
+                    index.items(),
+                    key=lambda x: x[1].get('start_date', '99999999')
+                )
+                
+                filename = oldest_file[0]
+                filepath = os.path.join(cache_dir, filename)
+                
+                # 刪除檔案
+                try:
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+                    del index[filename]
+                except:
+                    # 刪除失敗，從索引移除但繼續
+                    if filename in index:
+                        del index[filename]
+                    break
+            
+            # 保存更新後的索引
+            save_index(index)
+        
         # 迭代每一天
         current_date = start_date
         days_processed = 0
@@ -552,13 +643,36 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                 files = gdrive.list_files(folder_id)
                 cdr_files = [f for f in files if f['name'].endswith('.dat')]
                 
-                # 下載並解析
+                # 載入索引表
+                index = load_index()
+                
+                # 下載並解析（使用快取 + 索引表）
                 for file_info in cdr_files:
-                    # 下載到臨時檔案
-                    temp_dir = tempfile.gettempdir()
-                    local_path = os.path.join(temp_dir, file_info['name'])
+                    filename = file_info['name']
+                    cache_path = os.path.join(cache_dir, filename)
                     
-                    gdrive.download_file(file_info['id'], local_path)
+                    # 檢查快取（優先使用快取）
+                    if filename in index and os.path.exists(cache_path):
+                        # 使用快取檔案
+                        local_path = cache_path
+                    else:
+                        # 下載到快取
+                        gdrive.download_file(file_info['id'], cache_path)
+                        local_path = cache_path
+                        
+                        # 提取日期範圍並建立索引
+                        start_date_str, end_date_str = extract_cdr_dates(cache_path)
+                        
+                        if start_date_str and end_date_str:
+                            index[filename] = {
+                                'start_date': start_date_str,
+                                'end_date': end_date_str,
+                                'file_size': os.path.getsize(cache_path)
+                            }
+                            save_index(index)
+                        
+                        # 清理快取（確保不超過 5MB）
+                        cleanup_cache()
                     
                     # 解析並過濾
                     records = parser.parse_file(local_path)
@@ -581,10 +695,13 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                                     
                                     # 檢查是否在日期範圍內
                                     if start_date <= call_datetime.date() <= end_date:
-                                        # 提取資料量（bytes）
+                                        # 提取資料量（TAP II 格式：micro-bytes）
                                         data_volume_bytes = record.raw_data[135:145]
                                         try:
-                                            data_bytes = int(data_volume_bytes.decode('ascii', errors='ignore').strip() or '0')
+                                            # TAP II 格式：原始值單位是 micro-bytes
+                                            raw_value = int(data_volume_bytes.decode('ascii', errors='ignore').strip() or '0')
+                                            # 除以 1,000,000 轉換為實際 bytes
+                                            data_bytes = raw_value / 1000000
                                         except:
                                             data_bytes = 0
                                         
@@ -610,11 +727,7 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                                         )
                                         all_records.append(cdr_record)
                     
-                    # 刪除臨時檔案
-                    try:
-                        os.remove(local_path)
-                    except:
-                        pass
+                    # 快取機制：不刪除檔案，保留在快取中
             
             except Exception as day_error:
                 # 該日載入失敗，記錄但繼續
