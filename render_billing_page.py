@@ -323,14 +323,24 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         st.markdown("---")
         st.subheader(f"📋 通訊記錄（共 {len(bill.records)} 筆）")
         
+        # 計算累計用量以判斷超量
+        累計用量 = 0
+        
         # 轉換為 DataFrame
         records_data = []
         for record in bill.records:
+            # 轉換為 bytes
+            data_bytes = int(record.data_mb * 1024 * 1024)
+            累計用量 += data_bytes
+            
+            # 判斷是否超量
+            is_overage = 累計用量 > bill.included_bytes
+            
             records_data.append({
                 '時間': record.call_datetime.strftime('%Y-%m-%d %H:%M:%S'),
-                '服務': record.call_type,
-                '資料量': f"{record.data_mb:.6f} MB",
-                '服務代碼': record.service_code
+                '資費方案': bill.plan_name,
+                '資料量': f"{data_bytes} bytes",
+                '超量額度': '是' if is_overage else '否'
             })
         
         df = pd.DataFrame(records_data)
@@ -380,7 +390,7 @@ def render_range_bill(result, imei: str, query_date: str):
                 st.metric("超量費", f"${monthly_bill.overage_cost:.2f}")
             
             with col3:
-                st.metric("使用量", f"{monthly_bill.total_usage_bytes:,} bytes")
+                st.metric("使用量", f"{monthly_bill.total_bytes:,} bytes")
             
             with col4:
                 st.metric("訊息數", f"{monthly_bill.message_count} 則")

@@ -14,6 +14,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, date
 from pathlib import Path
 import json
+import math
 
 
 @dataclass
@@ -50,19 +51,34 @@ class PlanPricing:
     
     def calculate_overage_cost(self, total_bytes: int) -> float:
         """
-        計算超量費用
+        計算超量費用（無條件進位到整千）
+        
+        重要：超量額度以 1000 bytes 為單位，不足 1000 bytes 也要收完整費用
+        例如：超量 1 byte 要收 1 × $2.00 = $2.00
+             超量 1001 bytes 要收 2 × $2.00 = $4.00
         
         Args:
             total_bytes: 總使用數據量（bytes）
             
         Returns:
             超量費用（美元）
+            
+        Example:
+            >>> pricing = PlanPricing(included_bytes=12000, overage_per_1000=2.00)
+            >>> pricing.calculate_overage_cost(12001)  # 超量 1 byte
+            2.0  # 收 1 個完整單位
+            >>> pricing.calculate_overage_cost(13001)  # 超量 1001 bytes
+            4.0  # 收 2 個完整單位
         """
         if total_bytes <= self.included_bytes:
             return 0.0
         
         overage_bytes = total_bytes - self.included_bytes
-        return (overage_bytes / 1000.0) * self.overage_per_1000
+        
+        # 無條件進位到整千
+        overage_units = math.ceil(overage_bytes / 1000)
+        
+        return overage_units * self.overage_per_1000
     
     def apply_minimum_message_size(self, message_bytes: int) -> int:
         """
