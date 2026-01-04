@@ -256,6 +256,8 @@ class BillingCalculator:
             
             total_bytes = 0
             billable_bytes = 0
+            mailbox_checks = 0
+            registrations = 0
             
             for record in day_records:
                 actual_bytes = int(record.data_mb * 1024 * 1024)
@@ -263,6 +265,11 @@ class BillingCalculator:
                 
                 total_bytes += actual_bytes
                 billable_bytes += billable
+                
+                # 統計 Mailbox Check 和 Registration
+                if actual_bytes == 0 or record.data_mb == 0:
+                    mailbox_checks += 1
+                # 可以根據其他條件判斷 registrations
             
             # 簡化：每日費用按比例分配（實際應該累計計算超量）
             # 這裡先用簡單方式
@@ -273,8 +280,8 @@ class BillingCalculator:
                 message_count=len(day_records),
                 total_bytes=total_bytes,
                 billable_bytes=billable_bytes,
-                mailbox_checks=0,  # 簡化
-                registrations=0,    # 簡化
+                mailbox_checks=mailbox_checks,
+                registrations=registrations,
                 cost=daily_cost
             ))
         
