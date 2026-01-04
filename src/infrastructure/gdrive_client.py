@@ -332,22 +332,16 @@ class GoogleDriveClient:
     
     def upload_text_file(self, filename: str, content: str, folder_id: str = None) -> Dict[str, str]:
         """
-        上傳文字檔案到指定資料夾（預設為根資料夾）
+        上傳文字檔案（預設上傳到 Drive 最外層根目錄）
         
         Args:
             filename: 檔案名稱
             content: 文字內容
-            folder_id: 目標資料夾 ID（預設為根資料夾）
+            folder_id: 目標資料夾 ID（可選，預設為 None = Drive 根目錄）
             
         Returns:
             檔案資訊 {'id': 檔案ID, 'name': 檔案名稱}
         """
-        # 使用根資料夾作為預設目標
-        target_folder_id = folder_id or self.root_folder_id
-        
-        # 檢查檔案是否已存在
-        existing_file = self.find_file(filename, target_folder_id)
-        
         # 寫入臨時檔案
         import tempfile
         with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', suffix='.json') as f:
@@ -355,9 +349,21 @@ class GoogleDriveClient:
             temp_path = f.name
         
         try:
+            # 搜尋檔案（不限制資料夾，搜尋整個 Drive）
+            query = f"name = '{filename}' and trashed = false"
+            results = self.service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, parents)',
+                pageSize=10
+            ).execute()
+            
+            files = results.get('files', [])
+            existing_file = files[0] if files else None
+            
             if existing_file:
                 # 更新現有檔案
-                print(f"📝 更新現有檔案: {filename}")
+                print(f"📝 更新現有檔案: {filename} (ID: {existing_file['id']})")
                 media = MediaFileUpload(temp_path, mimetype='application/json', resumable=True)
                 
                 updated_file = self.service.files().update(
@@ -366,15 +372,23 @@ class GoogleDriveClient:
                     fields='id, name, webViewLink'
                 ).execute()
                 
+                print(f"✅ 檔案更新成功")
                 return updated_file
             else:
                 # 創建新檔案
                 print(f"📝 創建新檔案: {filename}")
+                
+                # 如果指定了 folder_id，使用它；否則不設置 parents（放在 Drive 根目錄）
                 file_metadata = {
                     'name': filename,
-                    'parents': [target_folder_id],
                     'mimeType': 'application/json'
                 }
+                
+                if folder_id:
+                    file_metadata['parents'] = [folder_id]
+                    print(f"   📁 目標資料夾: {folder_id}")
+                else:
+                    print(f"   📁 位置: Drive 根目錄")
                 
                 media = MediaFileUpload(temp_path, mimetype='application/json', resumable=True)
                 
@@ -384,6 +398,7 @@ class GoogleDriveClient:
                     fields='id, name, webViewLink'
                 ).execute()
                 
+                print(f"✅ 檔案創建成功 (ID: {created_file['id']})")
                 return created_file
                 
         except Exception as e:
@@ -402,26 +417,46 @@ class GoogleDriveClient:
         
         Args:
             filename: 檔案名稱
-            folder_id: 資料夾 ID（預設為根資料夾）
+            folder_id: 資料夾 ID（可選，不指定則搜尋整個 Drive）
             
         Returns:
             檔案內容
         """
-        # 使用根資料夾作為預設
-        target_folder_id = folder_id or self.root_folder_id
+        # 搜尋檔案（不限制資料夾，搜尋整個 Drive）
+        query = f"name = '{filename}' and trashed = false"
         
-        # 查詢檔案
-        file_info = self.find_file(filename, target_folder_id)
-        if not file_info:
-            raise FileNotFoundError(f"檔案不存在: {filename} (在資料夾 {target_folder_id})")
+        if folder_id:
+            query += f" and '{folder_id}' in parents"
+            print(f"📥 在資料夾 {folder_id} 中搜尋檔案: {filename}")
+        else:
+            print(f"📥 在整個 Drive 中搜尋檔案: {filename}")
         
-        # 下載檔案
         try:
+            results = self.service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, parents)',
+                pageSize=10
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                raise FileNotFoundError(f"檔案不存在: {filename}")
+            
+            file_info = files[0]
+            print(f"✅ 找到檔案: {filename} (ID: {file_info['id']})")
+            
+            # 下載檔案
             request = self.service.files().get_media(fileId=file_info['id'])
             content = request.execute()
             return content.decode('utf-8')
+            
         except HttpError as e:
-            raise Exception(f"下載失敗: {e}")
+            if e.resp.status == 404:
+                raise FileNotFoundError(f"檔案不存在: {filename}")
+            else:
+                raise Exception(f"下載失敗: {e}")
     
     def list_files_in_folder(self, folder_path: str) -> List[Dict]:
         """
