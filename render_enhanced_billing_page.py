@@ -11,10 +11,11 @@ Enhanced Billing Query Page
 
 import streamlit as st
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, List
 
 from src.services.enhanced_billing_calculator import get_enhanced_billing_calculator
 from src.services.device_history import get_device_history_manager
+from src.services.cdr_service import CDRService, SimpleCDRRecord
 from src.models.models import UserRole
 
 
@@ -64,11 +65,21 @@ def render_enhanced_billing_page():
             return
         
         try:
+            # 查詢 CDR 記錄
+            with st.spinner("正在查詢 CDR 記錄..."):
+                cdr_records = fetch_cdr_records(query_imei, query_year, query_month)
+                
+                if cdr_records:
+                    st.success(f"✅ 找到 {len(cdr_records)} 筆 CDR 記錄")
+                else:
+                    st.info("ℹ️ 未找到 CDR 記錄，僅顯示基本費用")
+            
             # 計算帳單
             bill = calculator.calculate_monthly_bill(
                 imei=query_imei,
                 year=query_year,
-                month=query_month
+                month=query_month,
+                cdr_records=cdr_records
             )
             
             # 顯示帳單
@@ -81,6 +92,45 @@ def render_enhanced_billing_page():
             import traceback
             with st.expander("詳細錯誤訊息"):
                 st.code(traceback.format_exc())
+
+
+def fetch_cdr_records(imei: str, year: int, month: int) -> List[SimpleCDRRecord]:
+    """
+    查詢 CDR 記錄
+    
+    Args:
+        imei: 設備 IMEI
+        year: 年份
+        month: 月份
+        
+    Returns:
+        CDR 記錄列表
+    """
+    try:
+        # 嘗試從 Google Drive 查詢
+        if 'gdrive_client' in st.session_state:
+            from src.services.billing_service import BillingService
+            
+            billing_service = BillingService(
+                gdrive_client=st.session_state.gdrive_client
+            )
+            
+            # 查詢該月的 CDR
+            records = billing_service.query_monthly_usage(
+                imei=imei,
+                year=year,
+                month=month
+            )
+            
+            return records
+        else:
+            # 如果沒有 Google Drive，返回空列表
+            st.warning("⚠️ Google Drive 未連接，無法查詢 CDR 記錄")
+            return []
+            
+    except Exception as e:
+        st.warning(f"⚠️ CDR 查詢失敗：{e}")
+        return []
 
 
 def display_enhanced_bill(bill, history_mgr):
@@ -162,23 +212,30 @@ def display_enhanced_bill(bill, history_mgr):
     
     st.table(fee_data)
     
-    # 使用量統計
-    if bill.total_bytes > 0 or bill.message_count > 0:
-        st.markdown("---")
-        st.markdown("### 📈 使用量統計")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("總數據量", f"{bill.total_bytes:,} bytes")
-        
-        with col2:
-            st.metric("訊息數量", f"{bill.message_count:,} 則")
-        
-        with col3:
-            if bill.total_bytes > 0:
-                avg_per_msg = bill.total_bytes / bill.message_count
-                st.metric("平均訊息大小", f"{avg_per_msg:.0f} bytes")
+    # 使用量統計 - 總是顯示
+    st.markdown("---")
+    st.markdown("### 📈 使用量統計")
+    
+    # 檢查是否有 CDR 數據
+    has_cdr_data = bill.total_bytes > 0 or bill.message_count > 0
+    
+    if not has_cdr_data:
+        st.info("ℹ️ 本月無使用記錄或 CDR 數據尚未同步")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("總數據量", f"{bill.total_bytes:,} bytes")
+    
+    with col2:
+        st.metric("訊息數量", f"{bill.message_count:,} 則")
+    
+    with col3:
+        if bill.total_bytes > 0 and bill.message_count > 0:
+            avg_per_msg = bill.total_bytes / bill.message_count
+            st.metric("平均訊息大小", f"{avg_per_msg:.0f} bytes")
+        else:
+            st.metric("平均訊息大小", "0 bytes")
     
     # 操作記錄
     if bill.plan_changes or bill.status_changes:
