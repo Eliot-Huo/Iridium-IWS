@@ -629,7 +629,7 @@ def main():
         # 客戶端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢"],
+            options=["設備管理", "費用查詢", "💰 帳單查詢（新）"],
             key="customer_page"
         )
         
@@ -637,11 +637,14 @@ def main():
             render_customer_view()
         elif page == "費用查詢":
             render_billing_query_page(st.session_state.gateway)
+        elif page == "💰 帳單查詢（新）":
+            from render_enhanced_billing_page import render_enhanced_billing_page
+            render_enhanced_billing_page()
     else:
         # 助理端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢", "價格管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
+            options=["設備管理", "🔧 設備操作管理（新）", "費用查詢", "💰 帳單查詢（新）", "價格管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
             key="assistant_page"
         )
         
@@ -652,8 +655,14 @@ def main():
                 gateway=st.session_state.gateway,
                 store=st.session_state.request_store
             )
+        elif page == "🔧 設備操作管理（新）":
+            from render_device_operations_page import render_device_operations_page
+            render_device_operations_page()
         elif page == "費用查詢":
             render_billing_query_page(st.session_state.gateway)
+        elif page == "💰 帳單查詢（新）":
+            from render_enhanced_billing_page import render_enhanced_billing_page
+            render_enhanced_billing_page()
         elif page == "價格管理":
             render_price_management_page()
         elif page == "CDR 同步管理":
