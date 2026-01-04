@@ -1,0 +1,58 @@
+[
+  {
+    "plan_name": "SBD0",
+    "monthly_rate": 20.0,
+    "included_bytes": 0,
+    "overage_per_1000": 2.1,
+    "min_message_size": 30,
+    "activation_fee": 0.0,
+    "suspended_fee": 4.0,
+    "mailbox_check_fee": 0.02,
+    "registration_fee": 0.02,
+    "effective_date": "2025-01-07",
+    "version": 1,
+    "notes": "初始價格（根據 SBD_Airtime_STD.pdf）"
+  },
+  {
+    "plan_name": "SBD12",
+    "monthly_rate": 28.0,
+    "included_bytes": 12000,
+    "overage_per_1000": 2.0,
+    "min_message_size": 10,
+    "activation_fee": 50.0,
+    "suspended_fee": 4.0,
+    "mailbox_check_fee": 0.02,
+    "registration_fee": 0.02,
+    "effective_date": "2025-01-07",
+    "version": 1,
+    "notes": "初始價格（根據 SBD_Airtime_STD.pdf）"
+  },
+  {
+    "plan_name": "SBD17",
+    "monthly_rate": 30.0,
+    "included_bytes": 17000,
+    "overage_per_1000": 1.6,
+    "min_message_size": 10,
+    "activation_fee": 50.0,
+    "suspended_fee": 4.0,
+    "mailbox_check_fee": 0.02,
+    "registration_fee": 0.02,
+    "effective_date": "2025-01-07",
+    "version": 1,
+    "notes": "初始價格（根據 SBD_Airtime_STD.pdf）"
+  },
+  {
+    "plan_name": "SBD30",
+    "monthly_rate": 50.0,
+    "included_bytes": 30000,
+    "overage_per_1000": 1.5,
+    "min_message_size": 10,
+    "activation_fee": 50.0,
+    "suspended_fee": 4.0,
+    "mailbox_check_fee": 0.02,
+    "registration_fee": 0.02,
+    "effective_date": "2025-01-07",
+    "version": 1,
+    "notes": "初始價格（根據 SBD_Airtime_STD.pdf）"
+  }
+]
