@@ -330,51 +330,90 @@ class GoogleDriveClient:
         except HttpError as e:
             raise Exception(f"更新失敗: {e}")
     
-    def upload_text_file(self, filename: str, content: str, folder_path: str = '') -> Dict[str, str]:
+    def upload_text_file(self, filename: str, content: str, folder_id: str = None) -> Dict[str, str]:
         """
-        上傳文字檔案
+        上傳文字檔案到指定資料夾（預設為根資料夾）
         
         Args:
             filename: 檔案名稱
             content: 文字內容
-            folder_path: 資料夾路徑（可選）
+            folder_id: 目標資料夾 ID（預設為根資料夾）
             
         Returns:
-            檔案資訊
+            檔案資訊 {'id': 檔案ID, 'name': 檔案名稱}
         """
+        # 使用根資料夾作為預設目標
+        target_folder_id = folder_id or self.root_folder_id
+        
+        # 檢查檔案是否已存在
+        existing_file = self.find_file(filename, target_folder_id)
+        
         # 寫入臨時檔案
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as f:
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', suffix='.json') as f:
             f.write(content)
             temp_path = f.name
         
         try:
-            result = self.upload_file(temp_path, folder_path or '', filename)
-            return result
+            if existing_file:
+                # 更新現有檔案
+                print(f"📝 更新現有檔案: {filename}")
+                media = MediaFileUpload(temp_path, mimetype='application/json', resumable=True)
+                
+                updated_file = self.service.files().update(
+                    fileId=existing_file['id'],
+                    media_body=media,
+                    fields='id, name, webViewLink'
+                ).execute()
+                
+                return updated_file
+            else:
+                # 創建新檔案
+                print(f"📝 創建新檔案: {filename}")
+                file_metadata = {
+                    'name': filename,
+                    'parents': [target_folder_id],
+                    'mimeType': 'application/json'
+                }
+                
+                media = MediaFileUpload(temp_path, mimetype='application/json', resumable=True)
+                
+                created_file = self.service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink'
+                ).execute()
+                
+                return created_file
+                
+        except Exception as e:
+            print(f"❌ 上傳檔案失敗: {e}")
+            raise
         finally:
             # 刪除臨時檔案
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except:
+                pass
     
-    def download_file_content(self, filename: str, folder_path: str = '') -> str:
+    def download_file_content(self, filename: str, folder_id: str = None) -> str:
         """
         下載檔案內容（文字）
         
         Args:
             filename: 檔案名稱
-            folder_path: 資料夾路徑（可選）
+            folder_id: 資料夾 ID（預設為根資料夾）
             
         Returns:
             檔案內容
         """
-        # 取得資料夾 ID
-        folder_id = None
-        if folder_path:
-            folder_id = self._get_or_create_folder_by_path(folder_path)
+        # 使用根資料夾作為預設
+        target_folder_id = folder_id or self.root_folder_id
         
         # 查詢檔案
-        file_info = self.find_file(filename, folder_id)
+        file_info = self.find_file(filename, target_folder_id)
         if not file_info:
-            raise FileNotFoundError(f"檔案不存在: {filename}")
+            raise FileNotFoundError(f"檔案不存在: {filename} (在資料夾 {target_folder_id})")
         
         # 下載檔案
         try:

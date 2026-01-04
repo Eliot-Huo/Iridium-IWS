@@ -331,37 +331,65 @@ class IncrementalSyncManager:
         """從 Google Drive 載入同步狀態"""
         if not self.gdrive or not GDRIVE_AVAILABLE:
             # 如果沒有 Google Drive，使用本地狀態
+            print("⚠️ Google Drive 不可用，嘗試載入本地狀態")
             return self._load_local_status()
         
         try:
-            # 從 Google Drive 下載狀態檔案
+            print(f"📥 正在從 Google Drive 載入同步狀態...")
+            
+            # 從 Google Drive 根目錄下載狀態檔案
             content = self.gdrive.download_file_content(self.STATUS_FILENAME)
             data = json.loads(content)
-            return SyncStatus.from_dict(data)
-        except:
-            # 找不到狀態檔案，創建新的
+            status = SyncStatus.from_dict(data)
+            
+            processed_count = len(status.data.get('processed_files', {}))
+            print(f"✅ 成功從 Google Drive 載入狀態")
+            print(f"   📊 已記錄 {processed_count} 個已處理檔案")
+            print(f"   🕐 最後同步: {status.data.get('last_sync_time', '未知')}")
+            
+            return status
+            
+        except FileNotFoundError:
+            print(f"ℹ️ Google Drive 找不到 {self.STATUS_FILENAME}")
+            print("   這是第一次同步，將創建新的狀態檔案")
             return SyncStatus()
+            
+        except Exception as e:
+            print(f"⚠️ 從 Google Drive 載入狀態失敗: {e}")
+            print(f"   詳細錯誤: {type(e).__name__}")
+            print("   嘗試使用本地備份...")
+            return self._load_local_status()
     
     def _save_status(self, status: SyncStatus):
         """保存同步狀態到 Google Drive"""
         if not self.gdrive or not GDRIVE_AVAILABLE:
             # 如果沒有 Google Drive，保存到本地
+            print("⚠️ Google Drive 不可用，保存到本地")
             self._save_local_status(status)
             return
         
         try:
+            print(f"💾 正在保存同步狀態到 Google Drive...")
+            
             # 確保資料可以序列化
             status_dict = status.to_dict()
             
             # 檢查並清理資料（確保沒有 date 物件）
             status_dict = self._ensure_json_serializable(status_dict)
             
-            # 上傳到 Google Drive
+            # 上傳到 Google Drive 根目錄
             content = json.dumps(status_dict, indent=2, ensure_ascii=False)
-            self.gdrive.upload_text_file(self.STATUS_FILENAME, content)
+            result = self.gdrive.upload_text_file(self.STATUS_FILENAME, content)
+            
+            print(f"✅ 同步狀態已保存到 Google Drive")
+            print(f"   📄 檔案: {self.STATUS_FILENAME}")
+            print(f"   📊 已記錄 {len(status_dict.get('processed_files', {}))} 個檔案")
+            
         except Exception as e:
             # 保存失敗，記錄錯誤
-            print(f"⚠️ 保存同步狀態失敗: {e}")
+            print(f"❌ 保存到 Google Drive 失敗: {e}")
+            print(f"   詳細錯誤: {type(e).__name__}")
+            print(f"   💾 降級保存到本地...")
             # 備份到本地
             self._save_local_status(status)
     
