@@ -1,5 +1,5 @@
 """
-衛星設備管理系統 - Streamlit 主程式 v6.37.0
+衛星設備管理系統 - Streamlit 主程式 v6.36.0
 完整整合 IWS Gateway + 服務請求追蹤系統 + 費用查詢 + 價格管理 + CDR 完整管理
 
 支援設備類型：
@@ -8,7 +8,6 @@
 - Iridium Go! Exec - 預留
 
 版本更新：
-- v6.37.0: 企業級重構 - 新增異常處理體系 + 結構化日誌 + 依賴注入（保留所有功能）
 - v6.36.0: 新增 CDR 帳單查詢 - 完整 CDR 下載、分類、上傳、查詢功能
 - v6.35.6: 修正測試程式 - 使用專案的 TAPIIParser + CDR 內容檢查工具
 - v6.35.5: 修正 FTP 連接問題 - sync() 時自動連接 + Google Drive 測試程式
@@ -21,14 +20,6 @@
 import streamlit as st
 import sys
 from pathlib import Path
-
-# ========== 企業級模組 (v6.37.0 新增) ==========
-from src.utils.logger import LoggerFactory, get_logger
-from src.di import get_service_factory
-
-# 配置日誌系統
-LoggerFactory.configure(level='INFO', log_dir='logs')
-logger = get_logger('app')
 
 # 添加專案路徑
 project_root = Path(__file__).parent
@@ -71,20 +62,6 @@ st.set_page_config(
 def init_session_state():
     """初始化 Session State"""
     
-    logger.info("Initializing session state")
-    
-    # ========== 企業級服務工廠初始化 (v6.37.0) ==========
-    if 'service_factory' not in st.session_state:
-        try:
-            factory = get_service_factory()
-            if not factory.is_initialized:
-                factory.initialize_from_secrets(st.secrets)
-                logger.info("ServiceFactory initialized successfully")
-            st.session_state.service_factory = factory
-        except Exception as e:
-            logger.error("Failed to initialize ServiceFactory", exception=e)
-            # 繼續執行，讓舊的初始化邏輯接管
-    
     # 使用者角色
     if 'current_role' not in st.session_state:
         st.session_state.current_role = UserRole.CUSTOMER
@@ -92,42 +69,25 @@ def init_session_state():
     if 'current_username' not in st.session_state:
         st.session_state.current_username = 'customer001'
     
-    # IWS Gateway (保留舊邏輯以確保兼容性)
+    # IWS Gateway
     if 'gateway' not in st.session_state:
         try:
-            # 優先嘗試從 ServiceFactory 取得
-            if 'service_factory' in st.session_state:
-                try:
-                    st.session_state.gateway = st.session_state.service_factory.gateway
-                    st.session_state.gateway_initialized = True
-                    logger.info("Gateway initialized from ServiceFactory")
-                except Exception as e:
-                    logger.warning("Failed to get gateway from factory, using direct initialization", exception=e)
-                    # 降級到舊方法
-                    raise e
-            else:
-                raise Exception("ServiceFactory not available")
-                
-        except Exception:
-            # 降級：使用原始的直接初始化方法
-            try:
-                username = st.secrets.get('IWS_USERNAME', 'IWSN3D')
-                password = st.secrets.get('IWS_PASSWORD', '')
-                sp_account = st.secrets.get('IWS_SP_ACCOUNT', '200883')
-                endpoint = st.secrets.get('IWS_ENDPOINT', 'https://iwstraining.iridium.com:8443/iws-current/iws')
-                
-                st.session_state.gateway = IWSGateway(
-                    username=username,
-                    password=password,
-                    sp_account=sp_account,
-                    endpoint=endpoint
-                )
-                st.session_state.gateway_initialized = True
-                logger.info("Gateway initialized directly (fallback)")
-            except Exception as e:
-                st.session_state.gateway_initialized = False
-                st.session_state.gateway_error = str(e)
-                logger.error("Gateway initialization failed", exception=e)
+            # 優先從 secrets 讀取，否則使用預設值
+            username = st.secrets.get('IWS_USERNAME', 'IWSN3D')
+            password = st.secrets.get('IWS_PASSWORD', '')  # 不提供預設密碼
+            sp_account = st.secrets.get('IWS_SP_ACCOUNT', '200883')
+            endpoint = st.secrets.get('IWS_ENDPOINT', 'https://iwstraining.iridium.com:8443/iws-current/iws')
+            
+            st.session_state.gateway = IWSGateway(
+                username=username,
+                password=password,
+                sp_account=sp_account,
+                endpoint=endpoint
+            )
+            st.session_state.gateway_initialized = True
+        except Exception as e:
+            st.session_state.gateway_initialized = False
+            st.session_state.gateway_error = str(e)
     
     # 服務追蹤系統
     if 'request_store' not in st.session_state:
@@ -164,7 +124,7 @@ def render_sidebar():
     """渲染側邊欄"""
     with st.sidebar:
         st.title("🛰️ 衛星設備管理")
-        st.caption("v6.37.0 - 企業級重構版")
+        st.caption("v6.35.6 - 穩定版")
         
         st.markdown("---")
         

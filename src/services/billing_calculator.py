@@ -266,10 +266,9 @@ class BillingCalculator:
                 total_bytes += actual_bytes
                 billable_bytes += billable
                 
-                # 統計 Mailbox Check 和 Registration
+                # 統計 Mailbox Check（資料量為 0 的記錄）
                 if actual_bytes == 0 or record.data_mb == 0:
                     mailbox_checks += 1
-                # 可以根據其他條件判斷 registrations
             
             # 簡化：每日費用按比例分配（實際應該累計計算超量）
             # 這裡先用簡單方式

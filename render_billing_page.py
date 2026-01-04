@@ -708,8 +708,25 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                                         # 轉換為 MB
                                         data_mb = data_bytes / (1024 * 1024)
                                         
-                                        # 提取服務類型碼（位置 85-87）
-                                        service_code = record.raw_data[85:87].decode('ascii', errors='ignore').strip()
+                                        # 提取服務類型碼（位置 85-87，根據 TAP II 規格）
+                                        # 注意：實際位置可能需要根據文檔調整
+                                        try:
+                                            service_code_bytes = record.raw_data[85:87]
+                                            service_code = service_code_bytes.decode('ascii', errors='ignore').strip()
+                                            
+                                            # 如果解析失敗或為空，預設為 '36' (SBD)
+                                            if not service_code:
+                                                service_code = '36'
+                                        except:
+                                            service_code = '36'  # 預設為 SBD
+                                        
+                                        # 根據 service_code 設置 call_type
+                                        service_type_map = {
+                                            '36': 'Short Burst Data',
+                                            '81': 'Mailbox Check',
+                                            '82': 'SBD Registration',
+                                        }
+                                        call_type = service_type_map.get(service_code, 'Short Burst Data')
                                         
                                         # 創建記錄
                                         cdr_record = SimpleCDRRecord(
@@ -717,7 +734,7 @@ def _load_cdr_for_date_range(imei: str, start_date: date, end_date: date):
                                             call_datetime=call_datetime,
                                             duration_seconds=0,  # TAP II 沒有通話時長
                                             data_mb=data_mb,
-                                            call_type='SBD',  # 預設為 SBD
+                                            call_type=call_type,  # 根據 service_code 設置
                                             service_code=service_code,
                                             destination='',
                                             cost=0.0,  # 稍後計算
