@@ -319,6 +319,36 @@ def render_monthly_bill(bill, imei: str, query_date: str):
         - Registration：{bill.registrations} 次
         """)
     
+    # 利潤分析
+    if bill.profit > 0 or bill.iridium_cost > 0:
+        st.markdown("---")
+        st.subheader("💰 利潤分析")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                label="Iridium 成本",
+                value=f"${bill.iridium_cost:.2f}",
+                help="從 Iridium 的進貨成本"
+            )
+        
+        with col2:
+            st.metric(
+                label="本月利潤",
+                value=f"${bill.profit:.2f}",
+                delta=f"{bill.profit_margin:.1f}%",
+                delta_color="normal" if bill.profit > 0 else "inverse",
+                help="客戶收費 - Iridium 成本"
+            )
+        
+        with col3:
+            st.metric(
+                label="利潤率",
+                value=f"{bill.profit_margin:.1f}%",
+                help="利潤 / 客戶收費 × 100%"
+            )
+    
     # 通訊記錄
     if bill.records:
         st.markdown("---")

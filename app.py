@@ -641,7 +641,7 @@ def main():
         # 助理端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢", "價格管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
+            options=["設備管理", "費用查詢", "價格管理", "Profile 管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
             key="assistant_page"
         )
         
@@ -656,6 +656,10 @@ def main():
             render_billing_query_page(st.session_state.gateway)
         elif page == "價格管理":
             render_price_management_page()
+        elif page == "Profile 管理":
+            # Profile 管理頁面
+            from render_profile_management_page import render_profile_management_page
+            render_profile_management_page()
         elif page == "CDR 同步管理":
             # CDR 同步管理頁面
             from render_sync_page import render_sync_management_page

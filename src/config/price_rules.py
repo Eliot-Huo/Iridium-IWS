@@ -185,6 +185,72 @@ DEFAULT_PRICES: List[Dict] = [
 ]
 
 
+# ==================== Iridium 成本價格（進貨價）====================
+
+# Iridium 官方價格透過 IridiumCostPriceManager 管理
+# 預設價格在初始化時從 IRIDIUM_COST_PRICES 載入
+# 可以在助理頁面動態調整
+
+IRIDIUM_COST_PRICES: List[Dict] = [
+    {
+        'plan_name': 'SBD0',
+        'monthly_rate': 10.00,
+        'included_bytes': 0,
+        'overage_per_1000': 0.75,
+        'min_message_size': 30,
+        'activation_fee': 0.00,
+        'suspended_fee': 1.00,
+        'mailbox_check_fee': 0.01,
+        'registration_fee': 0.01,
+        'effective_date': '2025-06-23',
+        'version': 1,
+        'notes': 'Iridium 官方成本價（預設值，可調整）'
+    },
+    {
+        'plan_name': 'SBD12',
+        'monthly_rate': 14.00,
+        'included_bytes': 12000,
+        'overage_per_1000': 0.80,
+        'min_message_size': 10,
+        'activation_fee': 30.00,
+        'suspended_fee': 1.50,
+        'mailbox_check_fee': 0.01,
+        'registration_fee': 0.01,
+        'effective_date': '2025-06-23',
+        'version': 1,
+        'notes': 'Iridium 官方成本價（預設值，可調整）'
+    },
+    {
+        'plan_name': 'SBD17',
+        'monthly_rate': 15.00,
+        'included_bytes': 17000,
+        'overage_per_1000': 1.00,
+        'min_message_size': 10,
+        'activation_fee': 30.00,
+        'suspended_fee': 1.00,
+        'mailbox_check_fee': 0.01,
+        'registration_fee': 0.01,
+        'effective_date': '2025-06-23',
+        'version': 1,
+        'notes': 'Iridium 官方成本價（預設值，可調整）'
+    },
+    {
+        'plan_name': 'SBD30',
+        'monthly_rate': 25.00,
+        'included_bytes': 30000,
+        'overage_per_1000': 0.75,
+        'min_message_size': 10,
+        'activation_fee': 30.00,
+        'suspended_fee': 1.00,
+        'mailbox_check_fee': 0.01,
+        'registration_fee': 0.01,
+        'effective_date': '2025-06-23',
+        'version': 1,
+        'notes': 'Iridium 官方成本價（預設值，可調整）'
+    }
+]
+
+
 # ==================== 價格管理器 ====================
 
 class PriceManager:
@@ -482,3 +548,54 @@ def init_price_manager(storage_path: str = 'price_history.json') -> PriceManager
     global _global_price_manager
     _global_price_manager = PriceManager(storage_path)
     return _global_price_manager
+
+
+# ==================== Iridium 成本價格管理器 ====================
+
+# 全域成本價格管理器（在 app.py 初始化時創建）
+_global_cost_price_manager: Optional[PriceManager] = None
+
+
+def get_cost_price_manager() -> PriceManager:
+    """
+    取得全域 Iridium 成本價格管理器實例
+    
+    Returns:
+        PriceManager 實例（用於 Iridium 成本價）
+    """
+    global _global_cost_price_manager
+    if _global_cost_price_manager is None:
+        _global_cost_price_manager = PriceManager('iridium_cost_price_history.json')
+        
+        # 如果是第一次創建，載入預設成本價格
+        if not _global_cost_price_manager.get_all_prices():
+            print("📥 初始化 Iridium 成本價格...")
+            for price_data in IRIDIUM_COST_PRICES:
+                _global_cost_price_manager.add_new_price(**price_data)
+            print("✅ Iridium 成本價格初始化完成")
+    
+    return _global_cost_price_manager
+
+
+def init_cost_price_manager(storage_path: str = 'iridium_cost_price_history.json') -> PriceManager:
+    """
+    初始化全域 Iridium 成本價格管理器
+    
+    Args:
+        storage_path: 成本價格儲存檔案路徑
+        
+    Returns:
+        PriceManager 實例（用於 Iridium 成本價）
+    """
+    global _global_cost_price_manager
+    _global_cost_price_manager = PriceManager(storage_path)
+    
+    # 如果是第一次創建，載入預設成本價格
+    if not _global_cost_price_manager.get_all_prices():
+        print("📥 初始化 Iridium 成本價格...")
+        for price_data in IRIDIUM_COST_PRICES:
+            _global_cost_price_manager.add_new_price(**price_data)
+        print("✅ Iridium 成本價格初始化完成")
+    
+    return _global_cost_price_manager
+
