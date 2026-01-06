@@ -50,16 +50,27 @@ class GoogleDriveClient:
         """
         建立與 Google Drive 的連線
         
-        Raises:
-            GoogleDriveError: 連線失敗
+        Note: 如果設定不完整，會記錄警告但不拋出例外
         """
         try:
             logger.info("Connecting to Google Drive API...")
             
+            # 檢查是否有設定
+            service_account_json = self._config.get('service_account_json', '')
+            if not service_account_json or service_account_json.strip() == '':
+                logger.warning("⚠️ Google Drive service account not configured")
+                logger.warning("⚠️ Google Drive features will be disabled")
+                self._is_connected = False
+                return
+            
             # 解析 Service Account JSON
-            service_account_info = json.loads(
-                self._config['service_account_json']
-            )
+            try:
+                service_account_info = json.loads(service_account_json)
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Invalid service account JSON format: {e}")
+                logger.warning("⚠️ Google Drive features will be disabled")
+                self._is_connected = False
+                return
             
             # 建立憑證
             credentials = service_account.Credentials.from_service_account_info(
@@ -75,14 +86,22 @@ class GoogleDriveClient:
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to Google Drive: {e}")
-            raise GoogleDriveError(
-                f"無法連線到 Google Drive: {str(e)}"
-            )
+            logger.warning("⚠️ Google Drive features will be disabled")
+            self._is_connected = False
+            # 不拋出例外，允許系統繼續運作（無 GDrive 功能）
     
     def ensure_connected(self) -> None:
-        """確保已連線"""
+        """
+        確保已連線
+        
+        Raises:
+            GoogleDriveError: 如果未連線
+        """
         if not self._is_connected or not self._service:
-            self.connect()
+            raise GoogleDriveError(
+                "Google Drive 未連線，請檢查設定",
+                {'is_connected': self._is_connected}
+            )
     
     def is_connected(self) -> bool:
         """檢查連線狀態"""

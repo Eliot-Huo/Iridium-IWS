@@ -91,9 +91,9 @@ def init_dependencies() -> Dict[str, Any]:
         ftp_client = FTPClient(config['ftp'])
         gdrive_client = GoogleDriveClient(config['gdrive'])
         
-        # 建立連線
+        # 建立連線（IWS 必須成功，GDrive 可選）
         iws_client.connect()
-        gdrive_client.connect()
+        gdrive_client.connect()  # 失敗時只記錄警告，不中斷
         
         # 2. Repository Layer
         subscriber_repo = SubscriberRepository(iws_client)
@@ -189,8 +189,12 @@ def render_sidebar(deps: Dict[str, Any]) -> tuple[str, str]:
             
             # 連線狀態
             if deps.get('iws_client'):
-                status = "🟢 已連線" if deps['iws_client'].is_connected() else "🔴 未連線"
-                st.text(f"IWS: {status}")
+                iws_status = "🟢 已連線" if deps['iws_client'].is_connected() else "🔴 未連線"
+                st.text(f"IWS API: {iws_status}")
+            
+            if deps.get('gdrive_client'):
+                gdrive_status = "🟢 已連線" if deps['gdrive_client'].is_connected() else "⚪ 未設定"
+                st.text(f"Google Drive: {gdrive_status}")
         
         return role, page
 
