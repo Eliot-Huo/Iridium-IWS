@@ -175,21 +175,29 @@ def render_create_profile(manager: PriceProfileManager):
             if st.button("🚀 執行初始化", type="primary", key="init_profiles"):
                 with st.spinner("正在初始化 Profiles..."):
                     try:
-                        # 執行初始化腳本
+                        # 執行初始化腳本（使用相對路徑）
                         import subprocess
                         import sys
+                        from pathlib import Path
+                        
+                        # 取得專案根目錄
+                        project_root = Path(__file__).parent.parent.parent
+                        script_path = project_root / "scripts" / "initialize_profiles.py"
+                        
                         result = subprocess.run(
-                            [sys.executable, "scripts/initialize_profiles.py"],
+                            [sys.executable, str(script_path)],
                             capture_output=True,
                             text=True,
-                            cwd="/home/claude/SBD-Project/SBD-Restored"
+                            cwd=str(project_root)
                         )
                         
                         if result.returncode == 0:
                             st.success("✅ 初始化成功！")
                             st.rerun()
                         else:
-                            st.error(f"❌ 初始化失敗: {result.stderr}")
+                            st.error(f"❌ 初始化失敗")
+                            with st.expander("查看錯誤詳情"):
+                                st.code(result.stderr)
                     except Exception as e:
                         st.error(f"❌ 執行失敗: {str(e)}")
             
