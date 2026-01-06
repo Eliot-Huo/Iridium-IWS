@@ -169,7 +169,32 @@ def render_create_profile(manager: PriceProfileManager):
     with col2:
         source_profiles = manager.list_profiles(profile_type=source_type)
         if not source_profiles:
-            st.warning("⚠️ 沒有可複製的 Profile，請先執行 `python initialize_profiles.py`")
+            st.warning("⚠️ 沒有可複製的 Profile")
+            st.info("💡 請先初始化預設 Profiles")
+            
+            if st.button("🚀 執行初始化", type="primary", key="init_profiles"):
+                with st.spinner("正在初始化 Profiles..."):
+                    try:
+                        # 執行初始化腳本
+                        import subprocess
+                        import sys
+                        result = subprocess.run(
+                            [sys.executable, "scripts/initialize_profiles.py"],
+                            capture_output=True,
+                            text=True,
+                            cwd="/home/claude/SBD-Project/SBD-Restored"
+                        )
+                        
+                        if result.returncode == 0:
+                            st.success("✅ 初始化成功！")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ 初始化失敗: {result.stderr}")
+                    except Exception as e:
+                        st.error(f"❌ 執行失敗: {str(e)}")
+            
+            st.markdown("或者手動執行：")
+            st.code("python scripts/initialize_profiles.py", language="bash")
             return
         
         source_profile = st.selectbox(

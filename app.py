@@ -1,6 +1,6 @@
 """
-衛星設備管理系統 - Streamlit 主程式 v6.36.0
-完整整合 IWS Gateway + 服務請求追蹤系統 + 費用查詢 + 價格管理 + CDR 完整管理
+衛星設備管理系統 - Streamlit 主程式 v6.44.0
+完整整合 IWS Gateway + 服務請求追蹤系統 + 費用查詢 + 價格管理 + CDR 完整管理 + DSG 流量管理
 
 支援設備類型：
 - SBD (Short Burst Data) - 當前主要功能
@@ -8,14 +8,11 @@
 - Iridium Go! Exec - 預留
 
 版本更新：
-- v6.36.0: 新增 CDR 帳單查詢 - 完整 CDR 下載、分類、上傳、查詢功能
-- v6.35.6: 修正測試程式 - 使用專案的 TAPIIParser + CDR 內容檢查工具
-- v6.35.5: 修正 FTP 連接問題 - sync() 時自動連接 + Google Drive 測試程式
-- v6.35.4: 修正診斷工具導入錯誤 + 新增簡化版 FTP 診斷
-- v6.35.3: 修正 NameError - 移除多餘的 render_cdr_management_page 調用
-- v6.35.2: 修正語法錯誤 - billing_service.py 多餘的括號
-- v6.35.1: 修正查詢邏輯 - 從 Google Drive 讀取 CDR
-- v6.35.0: 增量同步系統 - FTP智慧同步到Google Drive
+- v6.44.0: 新增 DSG 流量管理 - Resource Group + Tracker 完整功能
+- v6.43.1: 實際價格初始化 - 使用 Exhibit B 價格
+- v6.43.0: 檔案結構重構 - 清晰的資料夾組織
+- v6.42.0: Profile 管理 Web UI - 完整的價格 Profile 管理
+- v6.41.0: Profile 系統實作 - 支援多版本價格管理
 """
 import streamlit as st
 import sys
@@ -41,7 +38,6 @@ from service_tracking.service_tracking_with_polling import (
 
 # 匯入頁面
 from pages.shared.billing_query import render_billing_query_page
-from pages.assistant.price_management import render_price_management_page
 
 # ========== 頁面設定 ==========
 
@@ -624,7 +620,7 @@ def main():
         # 客戶端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢"],
+            options=["設備管理", "費用查詢", "DSG 流量查詢"],
             key="customer_page"
         )
         
@@ -632,11 +628,14 @@ def main():
             render_customer_view()
         elif page == "費用查詢":
             render_billing_query_page(st.session_state.gateway)
+        elif page == "DSG 流量查詢":
+            from pages.customer.dsg_query import render_dsg_query_page
+            render_dsg_query_page(st.session_state.gateway)
     else:
         # 助理端頁面選單
         page = st.sidebar.selectbox(
             "📌 功能選單",
-            options=["設備管理", "費用查詢", "價格管理", "Profile 管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
+            options=["設備管理", "費用查詢", "Profile 管理", "DSG 流量管理", "CDR 同步管理", "CDR 帳單查詢", "📁 建立服務帳號資料夾"],
             key="assistant_page"
         )
         
@@ -649,12 +648,14 @@ def main():
             )
         elif page == "費用查詢":
             render_billing_query_page(st.session_state.gateway)
-        elif page == "價格管理":
-            render_price_management_page()
         elif page == "Profile 管理":
             # Profile 管理頁面
             from pages.assistant.profile_management import render_profile_management_page
             render_profile_management_page()
+        elif page == "DSG 流量管理":
+            # DSG 流量管理頁面
+            from pages.assistant.dsg_management import render_dsg_management_page
+            render_dsg_management_page(st.session_state.gateway)
         elif page == "CDR 同步管理":
             # CDR 同步管理頁面
             from pages.assistant.cdr_sync import render_sync_management_page
