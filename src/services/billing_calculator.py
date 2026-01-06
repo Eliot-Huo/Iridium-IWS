@@ -63,14 +63,14 @@ class MonthlyBill:
     registration_cost: float     # Registration 費用
     total_cost: float            # 總費用
     
-    # 利潤資訊（新增）
+    # 明細（必須在有預設值的參數之前）
+    daily_usage: List[UsageDetail]  # 每日使用明細
+    records: List[SimpleCDRRecord]  # 原始 CDR 記錄
+    
+    # 利潤資訊（有預設值，必須放最後）
     iridium_cost: float = 0.0           # Iridium 成本
     profit: float = 0.0                  # 利潤
     profit_margin: float = 0.0           # 利潤率 (%)
-    
-    # 明細
-    daily_usage: List[UsageDetail]  # 每日使用明細
-    records: List[SimpleCDRRecord]  # 原始 CDR 記錄
 
 
 class BillingCalculator:
