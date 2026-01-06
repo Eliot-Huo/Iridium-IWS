@@ -39,14 +39,9 @@ from service_tracking.service_tracking_with_polling import (
     get_operation_text
 )
 
-# 匯入費用查詢頁面
-from render_billing_page import render_billing_query_page
-
-# 匯入價格管理頁面
-from render_price_management_page import render_price_management_page
-
-# 匯入 CDR 管理頁面
-from render_cdr_management_page import render_cdr_management_page
+# 匯入頁面
+from pages.shared.billing_query import render_billing_query_page
+from pages.assistant.price_management import render_price_management_page
 
 # ========== 頁面設定 ==========
 
@@ -658,19 +653,19 @@ def main():
             render_price_management_page()
         elif page == "Profile 管理":
             # Profile 管理頁面
-            from render_profile_management_page import render_profile_management_page
+            from pages.assistant.profile_management import render_profile_management_page
             render_profile_management_page()
         elif page == "CDR 同步管理":
             # CDR 同步管理頁面
-            from render_sync_page import render_sync_management_page
+            from pages.assistant.cdr_sync import render_sync_management_page
             render_sync_management_page()
         elif page == "CDR 帳單查詢":
             # CDR 帳單查詢頁面
-            from render_cdr_billing_query_page import render_cdr_billing_query_page
+            from pages.assistant.cdr_billing_query import render_cdr_billing_query_page
             render_cdr_billing_query_page()
         elif page == "📁 建立服務帳號資料夾":
             # 建立服務帳號資料夾頁面
-            from create_sa_folder import create_sa_folder
+            from pages.assistant.create_sa_folder import create_sa_folder
             create_sa_folder()
 
 

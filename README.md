@@ -1,95 +1,105 @@
-# 🛰️ SBD 衛星設備管理系統
+# 衛星設備管理系統 (SBD Management System)
 
-完整的 Iridium SBD（Short Burst Data）設備管理與計費系統
-
----
-
-## 🎯 系統功能
-
-### ✅ **設備管理**
-- IMEI 查詢與狀態監控
-- 服務請求提交（啟用/停用/暫停/恢復）
-- 自動狀態追蹤與更新
-- IWS API 完整整合
-
-### 💰 **計費管理**
-- 月費用查詢
-- 資費方案管理
-- 價格規則設定
-- CDR 帳單明細查詢
-
-### 📊 **CDR 完整管理** ⭐ 新功能
-- **自動同步** - FTP 下載 → TAP II 解析 → Google Drive 上傳
-- **智慧分類** - 年/月資料夾自動建立
-- **增量同步** - 斷點續傳，只處理新檔案
-- **帳單查詢** - IMEI + 年月 → 完整計費明細
+**版本：** 6.42.1  
+**最後更新：** 2026-01-06
 
 ---
 
-## 🚀 快速開始
+## 📋 **專案簡介**
 
-### **本地運行**
+完整的 Iridium SBD 衛星設備管理系統，整合：
+- 設備管理（IWS API）
+- 費用查詢與計算
+- CDR 同步與分析
+- Price Profile 管理
+- 利潤分析
 
+---
+
+## 🗂️ **檔案結構**
+
+```
+SBD-Project/
+├── app.py                          # 主程式
+├── requirements.txt                # 依賴清單
+├── README.md                       # 本檔案
+│
+├── pages/                          # 📄 前端頁面
+│   ├── customer/                   # 客戶端頁面
+│   ├── assistant/                  # 助理端頁面
+│   │   ├── billing_query.py
+│   │   ├── price_management.py
+│   │   ├── profile_management.py
+│   │   ├── cdr_sync.py
+│   │   ├── cdr_billing_query.py
+│   │   ├── cdr_management.py
+│   │   └── create_sa_folder.py
+│   └── shared/                     # 共用頁面
+│       └── billing_query.py
+│
+├── docs/                           # 📚 文檔
+│   ├── deployment/                 # 部署文檔
+│   ├── features/                   # 功能說明
+│   ├── fixes/                      # 修復記錄
+│   └── architecture/               # 架構說明
+│
+├── scripts/                        # 🔧 工具腳本
+│   └── initialize_profiles.py      # 初始化 Price Profiles
+│
+├── src/                            # 核心程式碼
+│   ├── config/                     # 配置
+│   ├── infrastructure/             # 基礎設施
+│   ├── models/                     # 資料模型
+│   ├── parsers/                    # 解析器
+│   ├── repositories/               # 資料存取
+│   └── services/                   # 業務邏輯
+│
+├── service_tracking/               # 服務追蹤系統
+│
+└── price_profiles/                 # Price Profile 儲存
+    ├── customer/                   # 客戶售價
+    └── iridium_cost/               # Iridium 成本
+```
+
+---
+
+## 🚀 **快速開始**
+
+### **1. 安裝依賴**
 ```bash
-# 安裝依賴
 pip install -r requirements.txt
+```
 
-# 設定 Secrets
-mkdir -p .streamlit
-# 編輯 .streamlit/secrets.toml 填入憑證
+### **2. 初始化 Price Profiles**
+```bash
+python scripts/initialize_profiles.py
+```
 
-# 啟動應用
+### **3. 啟動應用**
+```bash
 streamlit run app.py
 ```
 
 ---
 
-## 📋 系統需求
+## 📚 **完整文檔**
 
-- Python 3.8+
-- Streamlit >= 1.28.0
-- Iridium IWS API 帳號
-- FTP 伺服器存取
-- Google Cloud Platform 服務帳號
+查看 `docs/` 目錄獲取詳細文檔
 
 ---
 
-## ⚙️ 配置說明
+## 🎉 **版本歷史**
 
-在 `.streamlit/secrets.toml` 中設定：
-
-```toml
-IWS_USERNAME = "你的帳號"
-IWS_PASSWORD = "你的密碼"
-FTP_HOST = "cdr.iridium.com"
-FTP_USER = "你的FTP帳號"
-FTP_PASS = "你的FTP密碼"
-
-[gcp_service_account]
-type = "service_account"
-project_id = "your-project-id"
-# ... 其他 GCP 設定
-```
-
-詳細說明請參考 [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md)
+### **v6.42.1** (2026-01-06)
+- 🗂️ 重構檔案結構
+- 📁 頁面整理到 pages/
+- 📚 文檔整理到 docs/
+- 🐛 修復 dataclass 問題
 
 ---
 
-## 📚 文件
+## 📧 **聯絡資訊**
 
-- 📖 **[部署指南](DEPLOYMENT_GUIDE.md)** - GitHub 與 Streamlit Cloud 部署
-- 📊 **[CDR 功能說明](CDR_FEATURES.md)** - CDR 同步與查詢指南
-
----
-
-## 📝 版本歷程
-
-### v6.36.0 (2025-01-02) - 最新版本 ⭐
-- ✨ 新增 CDR 帳單查詢功能
-- ✨ 完整 CDR 下載、分類、上傳流程
-- 🔧 優化增量同步機制
-
----
-
-**系統版本：v6.36.0**  
-**最後更新：2025-01-02**
+**專案：** nSAT  
+**公司：** N3D  
+**市場：** 日本登山市場
